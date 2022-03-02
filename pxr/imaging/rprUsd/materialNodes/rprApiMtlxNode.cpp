@@ -17,7 +17,7 @@ limitations under the License.
 #include "pxr/imaging/rprUsd/error.h"
 #include "pxr/base/arch/fileSystem.h"
 #include "rpr/baseNode.h"
-
+#include <iostream>
 #include <RadeonProRender_MaterialX.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -41,7 +41,7 @@ rpr::MaterialNode* RprUsd_CreateRprMtlxFromString(std::string const& mtlxString,
     // For now, as we have only rprMaterialXSetFile working, create a temporary file
     {
         std::string temporaryFilePath = ArchMakeTmpFileName("tmpMaterial", ".mtlx");
-
+        std::cout << temporaryFilePath.c_str();
         FILE* fout = fopen(temporaryFilePath.c_str(), "w");
         if (!fout) {
             return nullptr;
