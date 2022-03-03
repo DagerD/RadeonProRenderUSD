@@ -33,6 +33,7 @@ void HdRprMaterial::Sync(HdSceneDelegate* sceneDelegate,
     auto rprApi = rprRenderParam->AcquireRprApiForEdit();
 
     std::cout << "#########################Sync###################" << std::endl;
+
     if (*dirtyBits & HdMaterial::DirtyResource) {
         if (m_rprMaterial) {
             rprApi->Release(m_rprMaterial);
