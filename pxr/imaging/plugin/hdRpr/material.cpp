@@ -16,7 +16,7 @@ limitations under the License.
 
 #include "renderParam.h"
 #include "rprApi.h"
-
+#include <iostream>
 #include "pxr/usd/sdf/assetPath.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
@@ -32,6 +32,7 @@ void HdRprMaterial::Sync(HdSceneDelegate* sceneDelegate,
     auto rprRenderParam = static_cast<HdRprRenderParam*>(renderParam);
     auto rprApi = rprRenderParam->AcquireRprApiForEdit();
 
+    std::cout << "#########################Sync###################" << std::endl;
     if (*dirtyBits & HdMaterial::DirtyResource) {
         if (m_rprMaterial) {
             rprApi->Release(m_rprMaterial);
@@ -39,6 +40,7 @@ void HdRprMaterial::Sync(HdSceneDelegate* sceneDelegate,
         }
 
         VtValue vtMat = sceneDelegate->GetMaterialResource(GetId());
+        std::cout << "#########################DirtyResource###################" << std::endl;
         if (vtMat.IsHolding<HdMaterialNetworkMap>()) {
             auto& networkMap = vtMat.UncheckedGet<HdMaterialNetworkMap>();
             m_rprMaterial = rprApi->CreateMaterial(GetId(), sceneDelegate, networkMap);
