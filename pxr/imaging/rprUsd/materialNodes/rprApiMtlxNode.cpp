@@ -25,6 +25,7 @@ PXR_NAMESPACE_OPEN_SCOPE
 rpr::MaterialNode* RprUsd_CreateRprMtlxFromString(std::string const& mtlxString, RprUsd_MaterialBuilderContext const& context) {
     rpr::Status status;
     std::unique_ptr<rpr::MaterialNode> matxNode(context.rprContext->CreateMaterialNode(RPR_MATERIAL_NODE_MATX, &status));
+    std::cout << "#########################test###################" << std::endl;
     if (!matxNode) {
         RPR_ERROR_CHECK(status, "Failed to create matx node");
         return nullptr;
@@ -41,7 +42,7 @@ rpr::MaterialNode* RprUsd_CreateRprMtlxFromString(std::string const& mtlxString,
     // For now, as we have only rprMaterialXSetFile working, create a temporary file
     {
         std::string temporaryFilePath = ArchMakeTmpFileName("tmpMaterial", ".mtlx");
-        std::cout << temporaryFilePath.c_str();
+        std::cout << temporaryFilePath.c_str() << std::endl;
         FILE* fout = fopen(temporaryFilePath.c_str(), "w");
         if (!fout) {
             return nullptr;
