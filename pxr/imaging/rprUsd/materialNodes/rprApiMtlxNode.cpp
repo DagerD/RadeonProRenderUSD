@@ -23,9 +23,9 @@ limitations under the License.
 PXR_NAMESPACE_OPEN_SCOPE
 
 rpr::MaterialNode* RprUsd_CreateRprMtlxFromString(std::string const& mtlxString, RprUsd_MaterialBuilderContext const& context) {
+    std::cout << "#########################test###################" << std::endl;
     rpr::Status status;
     std::unique_ptr<rpr::MaterialNode> matxNode(context.rprContext->CreateMaterialNode(RPR_MATERIAL_NODE_MATX, &status));
-    std::cout << "#########################test###################" << std::endl;
     if (!matxNode) {
         RPR_ERROR_CHECK(status, "Failed to create matx node");
         return nullptr;
