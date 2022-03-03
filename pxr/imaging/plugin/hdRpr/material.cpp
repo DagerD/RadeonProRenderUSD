@@ -32,8 +32,7 @@ void HdRprMaterial::Sync(HdSceneDelegate* sceneDelegate,
     auto rprRenderParam = static_cast<HdRprRenderParam*>(renderParam);
     auto rprApi = rprRenderParam->AcquireRprApiForEdit();
 
-    std::cout << "#########################Sync###################" << std::endl;
-
+    std::cout << "#########################Sync DirtyResource?###################" << std::endl;
     if (*dirtyBits & HdMaterial::DirtyResource) {
         if (m_rprMaterial) {
             rprApi->Release(m_rprMaterial);
@@ -41,9 +40,10 @@ void HdRprMaterial::Sync(HdSceneDelegate* sceneDelegate,
         }
 
         VtValue vtMat = sceneDelegate->GetMaterialResource(GetId());
-        std::cout << "#########################DirtyResource###################" << std::endl;
+        std::cout << "#########################IsHolding?###################" << std::endl;
         if (vtMat.IsHolding<HdMaterialNetworkMap>()) {
             auto& networkMap = vtMat.UncheckedGet<HdMaterialNetworkMap>();
+            std::cout << "#########################CreateMaterial###################" << std::endl;
             m_rprMaterial = rprApi->CreateMaterial(GetId(), sceneDelegate, networkMap);
         }
 

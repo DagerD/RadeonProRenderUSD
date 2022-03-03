@@ -38,6 +38,7 @@ limitations under the License.
 
 #include <MaterialXCore/Document.h>
 #include <MaterialXFormat/Util.h>
+#include <iostream>
 namespace mx = MaterialX;
 
 #ifdef USE_CUSTOM_MATERIALX_LOADER
@@ -455,8 +456,9 @@ RprUsdMaterial* CreateMaterialXFromUsdShade(
         TF_RUNTIME_ERROR("Failed to convert HdNetwork to MaterialX document: %s", e.what());
         return nullptr;
     }
-
+    std::cout << "#########################CreateMaterialXFromUsdShade - inside###################" << std::endl;
     std::string mtlxString = mx::writeToXmlString(mtlxDoc, nullptr);
+    std::cout << mtlxString << std::endl;
     rpr::MaterialNode* mtlxNode = RprUsd_CreateRprMtlxFromString(mtlxString, context);
     if (!mtlxNode) {
         return nullptr;
@@ -485,7 +487,7 @@ RprUsdMaterial* RprUsdMaterialRegistry::CreateMaterial(
     HdMaterialNetworkMap const& legacyNetworkMap,
     rpr::Context* rprContext,
     RprUsdImageCache* imageCache) {
-
+    std::cout << "#########################CreateMaterial - inside###################" << std::endl;
     if (TfDebug::IsEnabled(RPR_USD_DEBUG_DUMP_MATERIALS)) {
         DumpMaterialNetwork(legacyNetworkMap);
     }
@@ -507,9 +509,11 @@ RprUsdMaterial* RprUsdMaterialRegistry::CreateMaterial(
 #ifdef USE_CUSTOM_MATERIALX_LOADER
     context.mtlxLoader = m_mtlxLoader.get();
 #endif // USE_CUSTOM_MATERIALX_LOADER
-
+    std::cout << "#########################isVolume?###################" << std::endl;
     if (!isVolume) {
+        std::cout << "#########################isVolume!###################" << std::endl;
         if (auto usdShadeMtlxMaterial = CreateMaterialXFromUsdShade(materialId, context, &m_materialXStdlibPath)) {
+            std::cout << "#########################CreateMaterialXFromUsdShade###################" << std::endl;
             return usdShadeMtlxMaterial;
         }
     }

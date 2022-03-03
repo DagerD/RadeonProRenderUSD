@@ -79,7 +79,7 @@ using json = nlohmann::json;
 #include <chrono>
 #include <vector>
 #include <mutex>
-
+#include <iostream>
 PXR_NAMESPACE_OPEN_SCOPE
 
 TF_DEFINE_ENV_SETTING(HDRPR_RENDER_QUALITY_OVERRIDE, "",
@@ -1160,10 +1160,12 @@ public:
 
     RprUsdMaterial* CreateMaterial(SdfPath const& materialId, HdSceneDelegate* sceneDelegate, HdMaterialNetworkMap const& materialNetwork) {
         if (!m_rprContext) {
+            std::cout << "#########################CreateMaterial m_rprContext?###################" << std::endl;
             return nullptr;
         }
 
         LockGuard rprLock(m_rprContext->GetMutex());
+        std::cout << "#########################CreateMaterial###################" << std::endl;
         return RprUsdMaterialRegistry::GetInstance().CreateMaterial(materialId, sceneDelegate, materialNetwork, m_rprContext.get(), m_imageCache.get());
     }
 
