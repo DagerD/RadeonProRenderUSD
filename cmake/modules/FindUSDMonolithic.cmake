@@ -1,6 +1,27 @@
 # USD 20.05 does not generate cmake config for the monolithic library as it does for the default mode
 # So we have to handle monolithic USD in a special way
 
+# Find Boost package before getting any boost specific components as we need to
+# disable boost-provided cmake config, based on the boost version found.
+find_package(Boost REQUIRED)
+
+# Boost provided cmake files (introduced in boost version 1.70) result in
+# inconsistent build failures on different platforms, when trying to find boost
+# component dependencies like python, program options, etc. Refer some related
+# discussions:
+# https://github.com/boostorg/python/issues/262#issuecomment-483069294
+# https://github.com/boostorg/boost_install/issues/12#issuecomment-508683006
+#
+# Hence to avoid issues with Boost provided cmake config, Boost_NO_BOOST_CMAKE
+# is enabled by default for boost version 1.70 and above. If a user explicitly
+# set Boost_NO_BOOST_CMAKE to Off, following will be a no-op.
+if (${Boost_VERSION_STRING} VERSION_GREATER_EQUAL "1.70")
+    option(Boost_NO_BOOST_CMAKE "Disable boost-provided cmake config" ON)
+    if (Boost_NO_BOOST_CMAKE)
+        message(STATUS "Disabling boost-provided cmake config")
+    endif()
+endif()
+
 find_path(USD_INCLUDE_DIR pxr/pxr.h
     PATHS ${pxr_DIR}/include
           $ENV{pxr_DIR}/include
@@ -51,10 +72,7 @@ if(USDMonolithic_FOUND)
     # as Boost_VERSION_STRING in CMake 3.14+
     set(boost_version_string "${Boost_MAJOR_VERSION}.${Boost_MINOR_VERSION}.${Boost_SUBMINOR_VERSION}")
 
-    if (((${boost_version_string} VERSION_GREATER_EQUAL "1.67") AND
-         (${boost_version_string} VERSION_LESS "1.70")) OR
-        ((${boost_version_string} VERSION_GREATER_EQUAL "1.70") AND
-          Boost_NO_BOOST_CMAKE))
+    if (${Boost_VERSION_STRING} VERSION_GREATER_EQUAL "1.67")
         # As of boost 1.67 the boost_python component name includes the
         # associated Python version (e.g. python27, python36). After boost 1.70
         # the built-in cmake files will deal with this. If we are using boost

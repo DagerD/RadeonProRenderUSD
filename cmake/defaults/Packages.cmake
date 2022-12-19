@@ -170,7 +170,7 @@ set(RPR_EXR_EXPORT_ENABLED TRUE)
 if(HoudiniUSD_FOUND)
     find_exr(OpenEXR OpenEXRCore Iex)
 endif()
-
+#[[
 if(NOT OpenEXR_FOUND)
     find_exr(Half IlmImf Iex)
     if(NOT OpenEXR_FOUND)
@@ -182,6 +182,15 @@ if(NOT OpenEXR_FOUND)
     if(NOT OpenEXR_FOUND)
         message(FATAL_ERROR "Failed to find Half library")
     endif()
+endif()
+]]
+# Try and find Imath or fallback to OpenEXR
+# Use ImathConfig.cmake,
+# Refer: https://github.com/AcademySoftwareFoundation/Imath/blob/main/docs/PortingGuide2-3.md#openexrimath-3x-only
+find_package(Imath CONFIG)
+if (NOT Imath_FOUND)
+    MESSAGE(STATUS "Imath not found. Looking for OpenEXR instead.")
+    find_package(OpenEXR REQUIRED)
 endif()
 
 # ----------------------------------------------

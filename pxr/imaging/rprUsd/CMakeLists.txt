@@ -156,6 +156,13 @@ if(PXR_VERSION GREATER_EQUAL 2108)
     target_compile_definitions(rprUsd PRIVATE USE_USDSHADE_MTLX)
 endif()
 
+target_link_libraries(rprUsd ${OPENEXR_LIBRARIES})
+target_link_libraries(rprUsd ${TBB_LIBRARY})
+
+target_include_directories(rprUsd PUBLIC ${OPENEXR_INCLUDE_DIR})
+target_include_directories(rprUsd PUBLIC ${IMATH_INCLUDE_DIR})
+target_include_directories(rprUsd PUBLIC ${TBB_INCLUDE_DIR})
+
 add_dependencies(rprUsd_headerfiles rprUsdSchema)
 
 if(HoudiniUSD_FOUND)

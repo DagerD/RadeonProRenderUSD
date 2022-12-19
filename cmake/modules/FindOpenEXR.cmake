@@ -23,9 +23,7 @@
 #
 
 find_path(OPENEXR_INCLUDE_DIR
-NAMES
     OpenEXR/half.h
-    Imath/half.h
 HINTS
     "${OPENEXR_LOCATION}"
     "$ENV{OPENEXR_LOCATION}"
@@ -33,8 +31,7 @@ PATH_SUFFIXES
     include/
 DOC
     "OpenEXR headers path"
-NO_DEFAULT_PATH
-NO_SYSTEM_ENVIRONMENT_PATH)
+)
 
 if(OPENEXR_INCLUDE_DIR)
   set(openexr_config_file "${OPENEXR_INCLUDE_DIR}/OpenEXR/OpenEXRConfig.h")
@@ -59,53 +56,49 @@ if(OPENEXR_INCLUDE_DIR)
   endif()
 endif()
 
-if(NOT OpenEXR_FIND_COMPONENTS)
-    set(OpenEXR_FIND_COMPONENTS
-        Half
-        Iex
-        Imath
-        IlmImf
-        IlmThread
-        IlmImfUtil
-        IexMath)
-endif()
-
-set(OPENEXR_LIBRARY_VARS)
-set(OPENEXR_LIBRARIES)
-foreach(OPENEXR_LIB ${OpenEXR_FIND_COMPONENTS})
+foreach(OPENEXR_LIB
+    Half
+    Iex
+    Imath
+    IlmImf
+    IlmThread
+    IlmImfUtil
+    IexMath
+    OpenEXR
+    OpenEXRCore
+    OpenEXRUtil
+    )
 
     # OpenEXR libraries may be suffixed with the version number, so we search
     # using both versioned and unversioned names.
     find_library(OPENEXR_${OPENEXR_LIB}_LIBRARY
         NAMES
             ${OPENEXR_LIB}-${OPENEXR_MAJOR_VERSION}_${OPENEXR_MINOR_VERSION}
-            ${OPENEXR_LIB}-${OPENEXR_MAJOR_VERSION}_${OPENEXR_MINOR_VERSION}_s
             ${OPENEXR_LIB}
         HINTS
             "${OPENEXR_LOCATION}"
             "$ENV{OPENEXR_LOCATION}"
-            "${OPENEXR_LIB_LOCATION}"
         PATH_SUFFIXES
             lib/
         DOC
             "OPENEXR's ${OPENEXR_LIB} library path"
-        NO_DEFAULT_PATH
-        NO_SYSTEM_ENVIRONMENT_PATH)
+    )
 
-    list(APPEND OPENEXR_LIBRARY_VARS OPENEXR_${OPENEXR_LIB}_LIBRARY)
-    list(APPEND OPENEXR_LIBRARIES ${OPENEXR_${OPENEXR_LIB}_LIBRARY})
+    if(OPENEXR_${OPENEXR_LIB}_LIBRARY)
+        list(APPEND OPENEXR_LIBRARIES ${OPENEXR_${OPENEXR_LIB}_LIBRARY})
+    endif()
 endforeach(OPENEXR_LIB)
 
 # So #include <half.h> works
 list(APPEND OPENEXR_INCLUDE_DIRS ${OPENEXR_INCLUDE_DIR})
 list(APPEND OPENEXR_INCLUDE_DIRS ${OPENEXR_INCLUDE_DIR}/OpenEXR)
-list(APPEND OPENEXR_INCLUDE_DIRS ${OPENEXR_INCLUDE_DIR}/Imath)
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(OpenEXR
     REQUIRED_VARS
         OPENEXR_INCLUDE_DIRS
-        ${OPENEXR_LIBRARY_VARS}
+        OPENEXR_LIBRARIES
     VERSION_VAR
         OPENEXR_VERSION
 )
+
