@@ -101,4 +101,3 @@ find_package_handle_standard_args(OpenEXR
     VERSION_VAR
         OPENEXR_VERSION
 )
-
