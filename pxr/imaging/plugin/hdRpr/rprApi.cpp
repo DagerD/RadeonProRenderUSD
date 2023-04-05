@@ -273,6 +273,29 @@ HdFormat ConvertUsdRenderVarDataType(TfToken const& format) {
     return it->second;
 }
 
+bool usingCPU(RprUsdContextMetadata& rprContextMetadata) {
+    return rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_CPU;
+}
+
+bool usingGPU(RprUsdContextMetadata& rprContextMetadata) {
+    return (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU0)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU1)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU2)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU3)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU4)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU5)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU6)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU7)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU8)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU9)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU10)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU11)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU12)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU13)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU14)
+        || (rprContextMetadata.creationFlags & RPR_CREATION_FLAGS_ENABLE_GPU15);
+}
+
 class HdRprApiRawMaterial : public RprUsdMaterial {
 public:
     static HdRprApiRawMaterial* Create(
@@ -337,48 +360,69 @@ struct HdRprApiEnvironmentLight {
 class CameraData {
 public:
     void Store(const std::unique_ptr<rpr::Camera>& camera) {
-        size_t dummy;
-        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_LENS_SHIFT, dummy, m_CameraLens, nullptr), "Failed to get lens shift");
-        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_SENSOR_SIZE, dummy, m_SensorSize, nullptr), "Failed to get  sensor size");
-        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_MODE, dummy, &m_Mode, nullptr), "Failed to get camera mode");
-        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_ORTHO_WIDTH, dummy, &m_OrthoWidth, nullptr), "Failed to get ortho width");
-        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_ORTHO_HEIGHT, dummy, &m_OrthoHeight, nullptr), "Failed to get ortho height");
+        size_t dummy = -1;
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_LENS_SHIFT, dummy, m_cameraLens, nullptr), "Failed to get lens shift");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_SENSOR_SIZE, dummy, m_sensorSize, nullptr), "Failed to get  sensor size");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_MODE, dummy, &m_mode, nullptr), "Failed to get camera mode");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_ORTHO_WIDTH, dummy, &m_orthoWidth, nullptr), "Failed to get ortho width");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_ORTHO_HEIGHT, dummy, &m_orthoHeight, nullptr), "Failed to get ortho height");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_LINEAR_MOTION, dummy, &m_linearMotion, nullptr), "Failed to get linear motion");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_ANGULAR_MOTION, dummy, &m_angularMotion, nullptr), "Failed to get angular motion");
+        RPR_ERROR_CHECK(camera->GetInfo(RPR_CAMERA_TRANSFORM, dummy, m_transform.GetArray(), nullptr), "Failed to get camera transform");
     }
 
     void Restore(std::unique_ptr<rpr::Camera>& camera) {
-        RPR_ERROR_CHECK(camera->SetLensShift(m_CameraLens[0], m_CameraLens[1]), "Failed to set lens shift");
-        RPR_ERROR_CHECK(camera->SetSensorSize(m_SensorSize[0], m_SensorSize[1]), "Failed to set sensor size");
-        RPR_ERROR_CHECK(camera->SetOrthoWidth(m_OrthoWidth), "Failed to set ortho width");
-        RPR_ERROR_CHECK(camera->SetOrthoHeight(m_OrthoHeight), "Failed to set ortho height");
+        RPR_ERROR_CHECK(camera->SetLensShift(m_cameraLens[0], m_cameraLens[1]), "Failed to set lens shift");
+        RPR_ERROR_CHECK(camera->SetSensorSize(m_sensorSize[0], m_sensorSize[1]), "Failed to set sensor size");
+        RPR_ERROR_CHECK(camera->SetOrthoWidth(m_orthoWidth), "Failed to set ortho width");
+        RPR_ERROR_CHECK(camera->SetOrthoHeight(m_orthoHeight), "Failed to set ortho height");
+        RPR_ERROR_CHECK(camera->SetLinearMotion(m_linearMotion[0], m_linearMotion[1], m_linearMotion[2]), "Failed to set camera linear motion");
+        RPR_ERROR_CHECK(camera->SetAngularMotion(m_angularMotion[0], m_angularMotion[1], m_angularMotion[2], m_angularMotion[3]), "Failed to set camera linear motion");
+        RPR_ERROR_CHECK(camera->SetTransform(m_transform.GetArray(), false), "Failed to set camera transform");
     }
 
-    void SetForTile(std::unique_ptr<rpr::Camera>& camera, const GfVec4f& tile) {
+    void SetForTile(std::unique_ptr<rpr::Camera>& camera, HdRprCamera const* hdCamera, const GfVec4f& tile) {
+        if (!hdCamera) {
+            return;
+        }
         float tileSizeX = tile[2] - tile[0];
         float tileSizeY = tile[3] - tile[1];
-        float lensShiftX = (m_CameraLens[0] + tile[0] + tileSizeX * 0.5 - 0.5) / tileSizeX;
-        float lensShiftY = (m_CameraLens[1] + tile[1] + tileSizeY * 0.5 - 0.5) / tileSizeY;
+        float lensShiftX = (m_cameraLens[0] + tile[0] + tileSizeX * 0.5 - 0.5) / tileSizeX;
+        float lensShiftY = (m_cameraLens[1] + tile[1] + tileSizeY * 0.5 - 0.5) / tileSizeY;
         RPR_ERROR_CHECK(camera->SetLensShift(lensShiftX, lensShiftY), "Failed to set lens shift");
-        if (m_Mode == RPR_CAMERA_MODE_PERSPECTIVE) {
+        if (m_mode == RPR_CAMERA_MODE_PERSPECTIVE) {
             RPR_ERROR_CHECK(camera->SetSensorSize(
-                m_SensorSize[0] * tileSizeX * (tileSizeY < tileSizeX ? tileSizeY / tileSizeX : 1),
-                m_SensorSize[1] * tileSizeY * (tileSizeX < tileSizeY ? tileSizeX / tileSizeY : 1)),
+                m_sensorSize[0] * tileSizeX * (tileSizeY < tileSizeX ? tileSizeY / tileSizeX : 1),
+                m_sensorSize[1] * tileSizeY * (tileSizeX < tileSizeY ? tileSizeX / tileSizeY : 1)),
                 "Failed to set sensor size");
         } 
-        else if (m_Mode == RPR_CAMERA_MODE_ORTHOGRAPHIC) {
-            RPR_ERROR_CHECK(camera->SetOrthoWidth(m_OrthoWidth * tileSizeX * (tileSizeY < tileSizeX ? tileSizeY / tileSizeX : 1)), "Failed to set ortho width");
-            RPR_ERROR_CHECK(camera->SetOrthoHeight(m_OrthoHeight * tileSizeY * (tileSizeX < tileSizeY ? tileSizeX / tileSizeY : 1)), "Failed to set ortho height");
+        else if (m_mode == RPR_CAMERA_MODE_ORTHOGRAPHIC) {
+            double shiftX = tile[0] + tileSizeX * 0.5 - 0.5;
+            double shiftY = tile[1] + tileSizeY * 0.5 - 0.5;
+            GfMatrix4f transform;
+            transform.SetIdentity().SetTranslate(GfVec3f(hdCamera->GetHorizontalAperture() * shiftX, hdCamera->GetVerticalAperture() * shiftY, 0));
+            transform *= m_transform;
+            transform.Orthonormalize();
+            RPR_ERROR_CHECK(camera->SetTransform(transform.GetArray(), false), "Failed to set camera transform");
+            RPR_ERROR_CHECK(camera->SetOrthoWidth(m_orthoWidth * tileSizeX * (tileSizeY < tileSizeX ? tileSizeY / tileSizeX : 1)), "Failed to set ortho width");
+            RPR_ERROR_CHECK(camera->SetOrthoHeight(m_orthoHeight * tileSizeY * (tileSizeX < tileSizeY ? tileSizeX / tileSizeY : 1)), "Failed to set ortho height");
+            RPR_ERROR_CHECK(camera->SetLinearMotion(0.0f, 0.0f, 0.0f), "Failed to set camera linear motion");
+            RPR_ERROR_CHECK(camera->SetAngularMotion(1.0f, 0.0f, 0.0f, 0.0f), "Failed to set camera angular motion");
         }
-        else if (m_Mode == RPR_CAMERA_MODE_LATITUDE_LONGITUDE_360) {
+        else if (m_mode == RPR_CAMERA_MODE_LATITUDE_LONGITUDE_360) {
             // do nothing
         }
 
     }
 private:
-    float m_CameraLens[2];
-    float m_SensorSize[2];
-    rpr_camera_mode m_Mode;
-    float m_OrthoWidth;
-    float m_OrthoHeight;
+    float m_cameraLens[2];
+    float m_sensorSize[2];
+    rpr_camera_mode m_mode;
+    float m_orthoWidth;
+    float m_orthoHeight;
+    GfMatrix4f m_transform;
+    float m_linearMotion[3];
+    float m_angularMotion[4];
 };
 
 class HdRprApiImpl {
@@ -1660,7 +1704,7 @@ public:
 
         m_isFirstSample = false;
 
-        auto resolveTime = std::chrono::high_resolution_clock::now() - startTime;
+        auto resolveTime = std::chrono::high_resolution_clock::now().time_since_epoch() - startTime.time_since_epoch();
         m_frameResolveTotalTime += resolveTime;
 
         if (m_resolveMode == kResolveInRenderUpdateCallback) {
@@ -1794,6 +1838,17 @@ public:
         m_dirtyFlags |= ChangeTracker::DirtyScene;
 
         auto& renderMode = preferences.GetCoreRenderMode();
+
+        if (m_rprContextMetadata.pluginType == kPluginNorthstar && renderMode == HdRprCoreRenderModeTokens->Contour && usingCPU(m_rprContextMetadata)) {
+            fprintf(stderr, "Contour mode on CPU is not supported, used Global Illumination mode instead.\n");
+            RPR_ERROR_CHECK(m_rprContext->SetParameter(RPR_CONTEXT_RENDER_MODE, (rpr_uint)RPR_RENDER_MODE_GLOBAL_ILLUMINATION), "Failed to set render mode");
+            return;
+        }
+        if (m_rprContextMetadata.pluginType == kPluginNorthstar && renderMode == HdRprCoreRenderModeTokens->Texcoord && (usingCPU(m_rprContextMetadata) && usingGPU(m_rprContextMetadata))) {
+            fprintf(stderr, "Texcoord mode on CPU and GPU simultaneously is not supported, used Global Illumination mode instead.\n");
+            RPR_ERROR_CHECK(m_rprContext->SetParameter(RPR_CONTEXT_RENDER_MODE, (rpr_uint)RPR_RENDER_MODE_GLOBAL_ILLUMINATION), "Failed to set render mode");
+            return;
+        }
 
         if (m_rprContextMetadata.pluginType == kPluginNorthstar) {
             if (renderMode == HdRprCoreRenderModeTokens->Contour) {
@@ -2746,7 +2801,7 @@ public:
             auto status = m_rprContext->Render();
             m_rucData.previousProgress = -1.0f;
 
-            m_frameRenderTotalTime += std::chrono::high_resolution_clock::now() - startTime;
+            m_frameRenderTotalTime += std::chrono::high_resolution_clock::now().time_since_epoch() - startTime.time_since_epoch();
 
             if (status != RPR_SUCCESS && status != RPR_ERROR_ABORTED) {
                 RPR_ERROR_CHECK(status, "Failed to render", m_rprContext.get());
@@ -2853,7 +2908,7 @@ public:
         bool tilingOn = windowNDC != GfVec4f(0.0f, 0.0f, 1.0f, 1.0f);
         if (tilingOn) {
             cd.Store(m_camera);
-            cd.SetForTile(m_camera, windowNDC);
+            cd.SetForTile(m_camera, m_hdCamera, windowNDC);
         }
 
         while (!IsConverged()) {
@@ -2895,7 +2950,7 @@ public:
             m_rucData.previousProgress = -1.0f;
             auto status = m_rprContext->Render();
 
-            m_frameRenderTotalTime += std::chrono::high_resolution_clock::now() - startTime;
+            m_frameRenderTotalTime += std::chrono::high_resolution_clock::now().time_since_epoch() - startTime.time_since_epoch();
 
             if (status != RPR_SUCCESS && status != RPR_ERROR_ABORTED) {
                 RPR_ERROR_CHECK(status, "Failed to render", m_rprContext.get());
@@ -3338,6 +3393,10 @@ Don't show this message again?
             stats.averageResolveTimePerSample = std::chrono::duration_cast<FloatingPointSecond>(resolveTime).count();
         }
 
+        stats.frameRenderTotalTime = (double)m_frameRenderTotalTime.count() / 1000000000.0;
+        stats.frameResolveTotalTime = (double)m_frameResolveTotalTime.count() / 1000000000.0;
+        stats.totalRenderTime = (double)(std::chrono::high_resolution_clock::now().time_since_epoch() - m_startTime.time_since_epoch()).count() / 1000000000.0;
+
         return stats;
     }
 
@@ -3566,20 +3625,21 @@ private:
 
         if (!RprUsdIsTracingEnabled()) {
             // We need it for correct rendering of ID AOVs (e.g. RPR_AOV_OBJECT_ID)
-            // XXX: it takes approximately 32ms due to RPR API indirection,
-            //      replace with rprContextSetAOVindexLookupRange when ready
             // XXX: only up to 2^16 indices, internal LUT limit
+            std::vector<GfVec4f> values;
+            values.reserve(1 << 16);
             for (uint32_t i = 0; i < (1 << 16); ++i) {
                 // Split uint32_t into 4 float values - every 8 bits correspond to one float.
                 // Such an encoding scheme simplifies the conversion of RPR ID texture (float4) to the int32 texture (as required by Hydra).
                 // Conversion is currently implemented like this:
                 //   * convert float4 texture to uchar4 using RIF
                 //   * reinterpret uchar4 data as int32_t (works on little-endian CPU only)
-                m_rprContext->SetAOVindexLookup(rpr_int(i),
-                    float(((i + 1) >> 0) & 0xFF) / 255.0f,
+                values.push_back(GfVec4f(
+                    float(((i + 1) >> 0) & 0xFF) / 255.0f, 
                     float(((i + 1) >> 8) & 0xFF) / 255.0f,
-                    0.0f, 0.0f);
+                    0.0f, 0.0f));
             }
+            m_rprContext->SetAOVindicesLookup(0, (1 << 16), (float*) values.data());
         }
 
         m_imageCache.reset(new RprUsdImageCache(m_rprContext.get()));
@@ -4345,6 +4405,7 @@ private:
     using Duration = std::chrono::high_resolution_clock::duration;
     Duration m_frameRenderTotalTime;
     Duration m_frameResolveTotalTime;
+    std::chrono::steady_clock::time_point m_startTime;
 
     struct RenderUpdateCallbackData {
         HdRprApiImpl* rprApi = nullptr;
@@ -4705,6 +4766,10 @@ int HdRprApi::GetCpuThreadCountUsed() const {
 
 float HdRprApi::GetFirstIterationRenerTime() const {
     return m_impl->GetFirstIterationRenerTime();
+}
+
+rpr::EnvironmentLight* GetLightObject(HdRprApiEnvironmentLight* envLight) {
+    return envLight->light.get();
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE
