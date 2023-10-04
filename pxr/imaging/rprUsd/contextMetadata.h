@@ -14,30 +14,65 @@ limitations under the License.
 #ifndef PXR_IMAGING_RPR_USD_CONTEXT_METADATA_H
 #define PXR_IMAGING_RPR_USD_CONTEXT_METADATA_H
 
+#include <map>
+
 #include "pxr/pxr.h"
+#include "pxr/imaging/rprUsd/api.h"
+
+#include <RadeonProRender.hpp>
+
+#include <string>
+#include <vector>
+
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 enum RprUsdPluginType {
     kPluginInvalid = -1,
-    kPluginTahoe,
     kPluginNorthstar,
     kPluginHybrid,
+    kPluginHybridPro,
     kPluginsCount
 };
 
-enum class RprUsdRenderDeviceType {
-    Invalid,
-    CPU,
-    GPU,
+struct RprUsdDevicesInfo {
+    struct CPU {
+	    int numThreads;
+	    CPU(int numThreads = 0) : numThreads(numThreads) {}
+	    bool operator==(CPU const& rhs) { return numThreads == rhs.numThreads; }
+    };
+    CPU cpu;
+
+    struct GPU {
+        int index;
+        std::string name;
+        GPU(int index = -1, std::string name = {}) : index(index), name(name) {}
+        bool operator==(GPU const& rhs) { return index == rhs.index && name == rhs.name; }
+    };
+    std::vector<GPU> gpus;
+
+    bool IsValid() const {
+        return cpu.numThreads > 0 || !gpus.empty();
+    }
 };
 
 struct RprUsdContextMetadata {
     RprUsdPluginType pluginType = kPluginInvalid;
-    RprUsdRenderDeviceType renderDeviceType = RprUsdRenderDeviceType::Invalid;
     bool isGlInteropEnabled = false;
+    bool useOpenCL = false;
     void* interopInfo = nullptr;
+    rpr::CreationFlags creationFlags = 0;
+    // additional info about hardware actually used in render context creation
+    RprUsdDevicesInfo devicesActuallyUsed;
+    std::map<std::uint64_t, std::uint32_t> additionalIntProperties;
 };
+
+RPRUSD_API
+bool RprUsdIsGpuUsed(RprUsdContextMetadata const& contextMetadata);
+
+inline bool RprUsdIsHybrid(RprUsdPluginType pluginType) {
+    return pluginType == kPluginHybrid || pluginType == kPluginHybridPro;
+}
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

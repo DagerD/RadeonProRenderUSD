@@ -6,6 +6,10 @@ if(NOT RPR_LOCATION)
     set(RPR_LOCATION ${PROJECT_SOURCE_DIR}/deps/RPR/RadeonProRender)
 endif()
 
+if(NOT RPR_NS_KERNELS_DIR)
+    set(RPR_NS_KERNELS_DIR ${PROJECT_SOURCE_DIR}/deps/RPR/hipbin)
+endif()
+
 macro(SET_RPR_VARIABLES dirName)
     if(NOT RPR_LOCATION_LIB)
         set(RPR_LOCATION_LIB ${RPR_LOCATION}/${dirName})
@@ -25,6 +29,8 @@ elseif(WIN32)
     endif()
 elseif(RPR_SDK_PLATFORM STREQUAL "ubuntu18.04")
     SET_RPR_VARIABLES(binUbuntu18)
+elseif(RPR_SDK_PLATFORM STREQUAL "ubuntu20.04")
+    SET_RPR_VARIABLES(binUbuntu20)
 else()
     SET_RPR_VARIABLES(binCentOS7)
 endif()
@@ -49,7 +55,7 @@ find_library(RPR_LOADSTORE_LIBRARY
     NO_SYSTEM_ENVIRONMENT_PATH
 )
 
-foreach(entry "Tahoe64;TAHOE" "Northstar64;NORTHSTAR" "Hybrid;HYBRID")
+foreach(entry "Tahoe64;TAHOE" "Northstar64;NORTHSTAR" "Hybrid;HYBRID" "HybridPro;HYBRID_PRO")
     list(GET entry 0 libName)
     list(GET entry 1 libId)
 
@@ -89,10 +95,13 @@ find_package_handle_standard_args(Rpr
     REQUIRED_VARS
         RPR_LOCATION_INCLUDE
         RPR_VERSION_STRING
-        RPR_LOADSTORE_LIBRARY
         RPR_LIBRARY
 )
 
 add_library(rpr INTERFACE)
 target_include_directories(rpr INTERFACE ${RPR_LOCATION_INCLUDE})
-target_link_libraries(rpr INTERFACE ${RPR_LIBRARY} ${RPR_LOADSTORE_LIBRARY})
+target_link_libraries(rpr INTERFACE ${RPR_LIBRARY})
+if(RPR_LOADSTORE_LIBRARY)
+    target_compile_definitions(rpr INTERFACE -DRPR_LOADSTORE_AVAILABLE)
+    target_link_libraries(rpr INTERFACE ${RPR_LOADSTORE_LIBRARY})
+endif()

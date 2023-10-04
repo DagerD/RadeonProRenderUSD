@@ -16,8 +16,10 @@ limitations under the License.
 
 #include "pxr/imaging/rprUsd/materialRegistry.h"
 #include "pxr/imaging/hd/extComputation.h"
+#include "pxr/imaging/hgi/tokens.h"
 #include "pxr/base/tf/diagnosticMgr.h"
 #include "pxr/base/tf/getenv.h"
+#include "pxr/base/arch/env.h"
 
 #include "camera.h"
 #include "config.h"
@@ -118,7 +120,8 @@ private:
 TF_DEFINE_PRIVATE_TOKENS(_tokens,
     (openvdbAsset) \
     (percentDone) \
-    (RPR)
+    (RPR) \
+    (mtlx)
 );
 
 const TfTokenVector HdRprDelegate::SUPPORTED_RPRIM_TYPES = {
@@ -149,11 +152,12 @@ const TfTokenVector HdRprDelegate::SUPPORTED_BPRIM_TYPES = {
     HdPrimTypeTokens->renderBuffer
 };
 
+HdRprDelegate* HdRprDelegate::m_lastCreatedInstance = nullptr;
+
 HdRprDelegate::HdRprDelegate(HdRenderSettingsMap const& renderSettings) {
     for (auto& entry : renderSettings) {
         SetRenderSetting(entry.first, entry.second);
     }
-
 
     m_rprApi.reset(new HdRprApi(this));
     g_rprApi = m_rprApi.get();
@@ -181,16 +185,13 @@ HdRprDelegate::HdRprDelegate(HdRenderSettingsMap const& renderSettings) {
             });
         TfDiagnosticMgr::GetInstance().AddDelegate(m_diagnosticMgrDelegate.get());
     }
+
+    m_lastCreatedInstance = this;
 }
 
 HdRprDelegate::~HdRprDelegate() {
-	// Render settings version reset is required for valid recreation of HdRprDelgate
-	// Config singleton persists in memory after delegate destruction, therefore version must be invalidated
-	HdRprConfig* config;
-	auto configInstanceLock = HdRprConfig::GetInstance(&config);
-	config->ResetRenderSettingsVersion();
-
     g_rprApi = nullptr;
+    m_lastCreatedInstance = nullptr;
 }
 
 HdRenderParam* HdRprDelegate::GetRenderParam() const {
@@ -203,8 +204,8 @@ void HdRprDelegate::CommitResources(HdChangeTracker* tracker) {
     m_rprApi->CommitResources();
 }
 
-TfToken HdRprDelegate::GetMaterialNetworkSelector() const {
-    return RprUsdMaterialRegistry::GetInstance().GetMaterialNetworkSelector();
+TfTokenVector HdRprDelegate::GetMaterialRenderContexts() const {
+    return {RprUsdMaterialRegistry::GetInstance().GetMaterialNetworkSelector(), _tokens->mtlx};
 }
 
 TfTokenVector const& HdRprDelegate::GetSupportedRprimTypes() const {
@@ -351,6 +352,13 @@ HdRenderSettingDescriptorList HdRprDelegate::GetRenderSettingDescriptors() const
     return m_settingDescriptors;
 }
 
+std::string join(const std::vector<std::string>& vec, const std::string& delim)
+{
+    std::stringstream res;
+    copy(vec.begin(), vec.end(), std::ostream_iterator<std::string>(res, delim.c_str()));
+    return res.str();
+}
+
 VtDictionary HdRprDelegate::GetRenderStats() const {
     auto rprStats = m_rprApi->GetRenderStats();
 
@@ -358,6 +366,19 @@ VtDictionary HdRprDelegate::GetRenderStats() const {
     stats[_tokens->percentDone.GetString()] = rprStats.percentDone;
     stats["averageRenderTimePerSample"] = rprStats.averageRenderTimePerSample;
     stats["averageResolveTimePerSample"] = rprStats.averageResolveTimePerSample;
+
+    stats["gpuUsedNames"] = join(m_rprApi->GetGpuUsedNames(), ", ");
+    stats["threadCountUsed"] = m_rprApi->GetCpuThreadCountUsed();
+
+    stats["firstIterationRenderTime"] = m_rprApi->GetFirstIterationRenerTime();
+
+    stats["totalRenderTime"] = rprStats.totalRenderTime;
+    stats["frameRenderTotalTime"] = rprStats.frameRenderTotalTime;
+    stats["frameResolveTotalTime"] = rprStats.frameResolveTotalTime;
+    
+    stats["cacheCreationTime"] = rprStats.cacheCreationTime;
+    stats["syncTime"] = rprStats.syncTime;
+
     return stats;
 }
 
@@ -381,7 +402,11 @@ bool HdRprDelegate::IsStopSupported() const {
     return true;
 }
 
+#if PXR_VERSION >= 2203
+bool HdRprDelegate::Stop(bool blocking) {
+#else
 bool HdRprDelegate::Stop() {
+#endif
     m_renderThread.StopRender();
     return true;
 }
@@ -394,31 +419,25 @@ bool HdRprDelegate::Restart() {
 
 void HdRprDelegate::SetDrivers(HdDriverVector const& drivers) {
     for (HdDriver* hdDriver : drivers) {
-        if (hdDriver->name == _tokens->RPR && hdDriver->driver.IsHolding<VtDictionary>()) {
+#ifdef HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT
+        if (hdDriver->name == HgiTokens->Vulkan && hdDriver->driver.IsHolding<VtDictionary>()) {
             VtDictionary dictionary = hdDriver->driver.UncheckedGet<VtDictionary>();
 
             // Interop info is used to create context
-            void* interopInfo = dictionary["interop_info"].Get<void*>();
+            static VkInteropInfo::VkInstance vkInstance;
+            static VkInteropInfo vkInteropInfo;
+            vkInteropInfo.instance_count = 1;
+            vkInteropInfo.main_instance_index = 0;
+            vkInteropInfo.frames_in_flight = dictionary["interop_info_frames_in_flight"].Get<unsigned int>();
+            vkInteropInfo.framebuffers_release_semaphores = dictionary["interop_info_semaphore_array"].Get<void*>();
+            vkInteropInfo.instances = &vkInstance;
+            vkInteropInfo.instances->physical_device = dictionary["interop_info_physicalDevice"].Get<void*>();
+            vkInteropInfo.instances->device = dictionary["interop_info_device"].Get<void*>();
 
-            // Condition variable is used to prevent this issue:
-            // [Plugin] Render_Frame_1 & Flush_Frame_1
-            // [Plugin] Render_Frame_2 & Flush_Frame_2
-            // [Client] Present frame
-            // Hybrid correct usage prohibit flushing next frame before previous was presented
-            // Render thread would wait on next flush till previous frame would be presented, example:
-            // [Plugin] Render_Frame_1 & Flush_Frame_1
-            // [Plugin] Render_Frame_2 & [Wait for present] <- Here frame wasn't presented yet
-            // [Client] Present Frame_1
-            // [Plugin] [Wake up] Flush Frame_2, continue work
-            std::condition_variable* presentedConditionVariable = dictionary["presented_condition_variable"].Get<std::condition_variable*>();
-            bool* presentedCondition = dictionary["presented_condition"].Get<bool*>();
-
-            // Set condition to true to render first frame
-            *presentedCondition = true;
-
-            m_rprApi->SetInteropInfo(interopInfo, presentedConditionVariable, presentedCondition);
+            m_rprApi->SetInteropInfo(&vkInteropInfo);
             break;
         }
+#endif // HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT
     }
 }
 
@@ -426,16 +445,10 @@ void HdRprDelegate::SetDrivers(HdDriverVector const& drivers) {
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
-void HdRprSetRenderDevice(const char* renderDevice) {
-    PXR_INTERNAL_NS::HdRprConfig* config;
-    auto configInstanceLock = PXR_INTERNAL_NS::HdRprConfig::GetInstance(&config);
-    config->SetRenderDevice(PXR_INTERNAL_NS::TfToken(renderDevice));
-}
-
 void HdRprSetRenderQuality(const char* quality) {
-    PXR_INTERNAL_NS::HdRprConfig* config;
-    auto configInstanceLock = PXR_INTERNAL_NS::HdRprConfig::GetInstance(&config);
-    config->SetRenderQuality(PXR_INTERNAL_NS::TfToken(quality));
+    // Set environment variable that would outlive render delegate dll, because config is destroyed on plugin reload
+    // HDRPR_RENDER_QUALITY_OVERRIDE env setting wasn't used because it seems not possible to declare it in .h file
+    PXR_INTERNAL_NS::ArchSetEnv("HDRPR_USDVIEW_RENDER_QUALITY", quality, true);
 }
 
 char* HdRprGetRenderQuality() {

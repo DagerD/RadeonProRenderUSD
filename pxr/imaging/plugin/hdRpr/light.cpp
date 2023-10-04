@@ -17,6 +17,9 @@ limitations under the License.
 #include "rprApi.h"
 
 #include "pxr/imaging/rprUsd/debugCodes.h"
+#include "pxr/imaging/rprUsd/tokens.h"
+
+#include "pxr/imaging/rprUsd/lightRegistry.h"
 
 #include "pxr/base/tf/envSetting.h"
 #include "pxr/base/gf/rotation.h"
@@ -123,8 +126,18 @@ float GetCylinderLightNormalization(GfMatrix4f const& transform, float length, f
     return scaleFactor;
 }
 
-float ComputeLightIntensity(float intensity, float exposure) {
-    return intensity * exp2(exposure);
+float ComputeLightIntensity(float intensity, float exposure, bool sameWithKarma, bool normalizeIntensity, TfToken lightType) {
+    intensity *= exp2(exposure);
+    int multiplier = 1;
+    if (sameWithKarma) {
+        if (!normalizeIntensity) {
+            multiplier = 3; // 3 is a manually fitted coefficient to get same visual results with Karma
+        }
+        else if (lightType != HdPrimTypeTokens->diskLight && lightType != HdPrimTypeTokens->sphereLight && lightType != HdPrimTypeTokens->cylinderLight) {
+            multiplier = 3; // 3 is a manually fitted coefficient to get same visual results with Karma
+        }
+    }
+    return intensity * multiplier;
 }
 
 } // namespace anonymous
@@ -197,11 +210,11 @@ rpr::Shape* HdRprLight::CreateCylinderLightMesh(HdRprApi* rprApi) {
 }
 
 void HdRprLight::SyncAreaLightGeomParams(HdSceneDelegate* sceneDelegate, float* intensity) {
-    bool normalizeIntensity = sceneDelegate->GetLightParamValue(GetId(), HdLightTokens->normalize).Get<bool>();
+    bool normalizeIntensity = HdRpr_GetParam(sceneDelegate, GetId(), HdLightTokens->normalize, false);
 
     if (m_lightType == HdPrimTypeTokens->diskLight ||
         m_lightType == HdPrimTypeTokens->sphereLight) {
-        float radius = std::abs(sceneDelegate->GetLightParamValue(GetId(), HdLightTokens->radius).Get<float>());
+        float radius = std::abs(HdRpr_GetParam(sceneDelegate, GetId(), HdLightTokens->radius, 1.0f));
 
         m_localTransform = GfMatrix4f(1.0f).SetScale(GfVec3f(radius * 2.0f));
 
@@ -213,8 +226,8 @@ void HdRprLight::SyncAreaLightGeomParams(HdSceneDelegate* sceneDelegate, float* 
             }
         }
     } else if (m_lightType == HdPrimTypeTokens->rectLight) {
-        float width = std::abs(sceneDelegate->GetLightParamValue(GetId(), HdLightTokens->width).Get<float>());
-        float height = std::abs(sceneDelegate->GetLightParamValue(GetId(), HdLightTokens->height).Get<float>());
+        float width = std::abs(HdRpr_GetParam(sceneDelegate, GetId(), HdLightTokens->width, 1.0f));
+        float height = std::abs(HdRpr_GetParam(sceneDelegate, GetId(), HdLightTokens->height, 1.0f));
 
         m_localTransform = GfMatrix4f(1.0f).SetScale(GfVec3f(width, height, 1.0f));
 
@@ -222,8 +235,8 @@ void HdRprLight::SyncAreaLightGeomParams(HdSceneDelegate* sceneDelegate, float* 
             (*intensity) /= GetRectLightNormalization(m_transform, width, height);
         }
     } else if (m_lightType == HdPrimTypeTokens->cylinderLight) {
-        float radius = std::abs(sceneDelegate->GetLightParamValue(GetId(), HdLightTokens->radius).Get<float>());
-        float length = std::abs(sceneDelegate->GetLightParamValue(GetId(), HdLightTokens->length).Get<float>());
+        float radius = std::abs(HdRpr_GetParam(sceneDelegate, GetId(), HdLightTokens->radius, 1.0f));
+        float length = std::abs(HdRpr_GetParam(sceneDelegate, GetId(), HdLightTokens->length, 1.0f));
 
         m_localTransform = GfMatrix4f(1.0f).SetRotate(GfRotation(GfVec3d(0.0, 1.0, 0.0), 90.0)) * GfMatrix4f(1.0f).SetScale(GfVec3f(length, radius * 2.0f, radius * 2.0f));
 
@@ -296,14 +309,25 @@ void HdRprLight::CreateAreaLightMesh(HdRprApi* rprApi, HdSceneDelegate* sceneDel
 
     HdRprGeometrySettings geomSettings = {};
 
-    // By default, conform to Karma's behavior - lights are invisible but still have an effect on the scene
     geomSettings.visibilityMask = kVisibleAll;
-    geomSettings.visibilityMask &= ~kVisiblePrimary;
-    geomSettings.visibilityMask &= ~kVisibleShadow;
-    geomSettings.visibilityMask &= ~kVisibleLight;
-
-    auto constantPrimvars = sceneDelegate->GetPrimvarDescriptors(GetId(), HdInterpolationConstant);
-    HdRprParseGeometrySettings(sceneDelegate, GetId(), constantPrimvars, &geomSettings);
+    auto setVisibilityFlag = [&](TfToken const& name, HdRprVisibilityFlag flag) {
+        VtValue value = HdRpr_GetParam(sceneDelegate, GetId(), name);
+        if (value.IsHolding<bool>()) {
+            if (value.UncheckedGet<bool>()) {
+                geomSettings.visibilityMask |= flag;
+            } else {
+                geomSettings.visibilityMask &= ~flag;
+            }
+        }
+    };
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityCamera, kVisiblePrimary);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityShadow, kVisibleShadow);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityReflection, kVisibleReflection);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityGlossyReflection, kVisibleGlossyReflection);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityRefraction, kVisibleRefraction);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityGlossyRefraction, kVisibleGlossyRefraction);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityDiffuse, kVisibleDiffuse);
+    setVisibilityFlag(RprUsdTokens->rprObjectVisibilityTransparent, kVisibleTransparent);
 
     for (auto& mesh : light->meshes) {
         rprApi->SetMeshVisibility(mesh, geomSettings.visibilityMask);
@@ -400,7 +424,7 @@ void HdRprLight::Sync(HdSceneDelegate* sceneDelegate,
 #if PXR_VERSION >= 2011
         m_transform = GfMatrix4f(sceneDelegate->GetTransform(id));
 #else
-        m_transform = GfMatrix4f(sceneDelegate->GetLightParamValue(id, HdTokens->transform).Get<GfMatrix4d>());
+        m_transform = GfMatrix4f(HdRpr_GetParam(sceneDelegate, id, HdTokens->transform).Get<GfMatrix4d>());
 #endif
     }
 
@@ -415,27 +439,32 @@ void HdRprLight::Sync(HdSceneDelegate* sceneDelegate,
         }
 
         bool newLight = false;
-        auto iesFile = sceneDelegate->GetLightParamValue(id, USD_LUX_TOKEN_SHAPING_IES_FILE);
+        rpr::Light* lightPtr = nullptr;
+        auto iesFile = HdRpr_GetParam(sceneDelegate, id, USD_LUX_TOKEN_SHAPING_IES_FILE);
         if (iesFile.IsHolding<SdfAssetPath>()) {
             auto& path = iesFile.UncheckedGet<SdfAssetPath>();
             if (!path.GetResolvedPath().empty()) {
                 if (auto light = rprApi->CreateIESLight(path.GetResolvedPath())) {
+                    m_localTransform *= GfMatrix4f(1.0).SetRotate(GfRotation(GfVec3d(1, 0, 0), 90));
                     m_light = light;
                     newLight = true;
+                    lightPtr = light;
                 }
             }
         } else {
-            auto coneAngle = sceneDelegate->GetLightParamValue(id, USD_LUX_TOKEN_SHAPING_CONE_ANGLE);
-            auto coneSoftness = sceneDelegate->GetLightParamValue(id, USD_LUX_TOKEN_SHAPING_CONE_SOFTNESS);
+            auto coneAngle = HdRpr_GetParam(sceneDelegate, id, USD_LUX_TOKEN_SHAPING_CONE_ANGLE);
+            auto coneSoftness = HdRpr_GetParam(sceneDelegate, id, USD_LUX_TOKEN_SHAPING_CONE_SOFTNESS);
             if (coneAngle.IsHolding<float>() && coneSoftness.IsHolding<float>()) {
                 if (auto light = rprApi->CreateSpotLight(coneAngle.UncheckedGet<float>(), coneSoftness.UncheckedGet<float>())) {
                     m_light = light;
                     newLight = true;
+                    lightPtr = light;
                 }
-            } else if (sceneDelegate->GetLightParamValue(id, UsdLuxTokens->treatAsPoint).GetWithDefault(false)) {
+            } else if (HdRpr_GetParam(sceneDelegate, id, UsdLuxTokens->treatAsPoint).GetWithDefault(false)) {
                 if (auto light = rprApi->CreatePointLight()) {
                     m_light = light;
                     newLight = true;
+                    lightPtr = light;
                 }
             } else {
                 if (rprApi->IsSphereAndDiskLightSupported() &&
@@ -448,6 +477,7 @@ void HdRprLight::Sync(HdSceneDelegate* sceneDelegate,
 
                             m_light = light;
                             newLight = true;
+                            lightPtr = light;
                         }
                     } else {
                         if (auto light = rprApi->CreateDiskLight()) {
@@ -456,6 +486,7 @@ void HdRprLight::Sync(HdSceneDelegate* sceneDelegate,
 
                             m_light = light;
                             newLight = true;
+                            lightPtr = light;
                         }
                     }
 
@@ -471,13 +502,15 @@ void HdRprLight::Sync(HdSceneDelegate* sceneDelegate,
             return;
         }
 
-        float intensity = sceneDelegate->GetLightParamValue(id, HdLightTokens->intensity).Get<float>();
-        float exposure = sceneDelegate->GetLightParamValue(id, HdLightTokens->exposure).Get<float>();
-        intensity = ComputeLightIntensity(intensity, exposure);
+        float intensity = HdRpr_GetParam(sceneDelegate, id, HdLightTokens->intensity, 1.0f);
+        float exposure = HdRpr_GetParam(sceneDelegate, id, HdLightTokens->exposure, 1.0f);
+        bool sameWithKarma = HdRpr_GetParam(sceneDelegate, id, RprUsdTokens->rprLightIntensitySameWithKarma, false);
+        bool normalizeIntensity = HdRpr_GetParam(sceneDelegate, id, HdLightTokens->normalize, false);
+        intensity = ComputeLightIntensity(intensity, exposure, sameWithKarma, normalizeIntensity, m_lightType);
 
-        GfVec3f color = sceneDelegate->GetLightParamValue(id, HdPrimvarRoleTokens->color).Get<GfVec3f>();
-        if (sceneDelegate->GetLightParamValue(id, HdLightTokens->enableColorTemperature).Get<bool>()) {
-            GfVec3f temperatureColor = UsdLuxBlackbodyTemperatureAsRgb(sceneDelegate->GetLightParamValue(id, HdLightTokens->colorTemperature).Get<float>());
+        GfVec3f color = HdRpr_GetParam(sceneDelegate, id, HdPrimvarRoleTokens->color, GfVec3f(1.0f));
+        if (HdRpr_GetParam(sceneDelegate, id, HdLightTokens->enableColorTemperature, false)) {
+            GfVec3f temperatureColor = UsdLuxBlackbodyTemperatureAsRgb(HdRpr_GetParam(sceneDelegate, id, HdLightTokens->colorTemperature, 5000.0f));
             color[0] *= temperatureColor[0];
             color[1] *= temperatureColor[1];
             color[2] *= temperatureColor[2];
@@ -497,6 +530,10 @@ void HdRprLight::Sync(HdSceneDelegate* sceneDelegate,
 
         if (newLight && RprUsdIsLeakCheckEnabled()) {
             BOOST_NS::apply_visitor(LightNameSetter{rprApi, id.GetText()}, m_light);
+        }
+
+        if (newLight) {
+            RprUsdLightRegistry::Register(id, lightPtr);
         }
     }
 
@@ -532,6 +569,7 @@ struct HdRprLight::LightReleaser : public BOOST_NS::static_visitor<> {
 };
 
 void HdRprLight::ReleaseLight(HdRprApi* rprApi) {
+    RprUsdLightRegistry::Release(GetId());
     BOOST_NS::apply_visitor(LightReleaser{rprApi}, m_light);
     m_light = LightVariantEmpty{};
 }

@@ -9,21 +9,23 @@ Add a new Houdini package with such configuration json:
 {
     "env":[
         {
-            "RPR":"path-to-the-package"
+            "HDRPR_DIR":"path-to-the-package"
         },
         {
-            "HOUDINI_PATH":"$RPR/houdini"
+            "HOUDINI_PATH":"$HDRPR_DIR/houdini"
         },
         {
-            "PATH":"$RPR/lib"
+            "PATH":"$HDRPR_DIR/lib"
         },
         {
-            "PYTHONPATH":"$RPR/lib/python"
+            "PYTHONPATH":"$HDRPR_DIR/lib/python"
         }
     ]
 }
 ```
 where `path-to-the-package` depends on where do you unzip hdRpr package and should point to the directory that contains INSTALL.md (this file)
+
+To setup the render settings update script, copy `<path-to-the-package>/plugin/usd/hdRpr/resources/scripts/rendersettings_OnLoaded.py` into `<houdini-root>/houdini/scripts/lop`
 
 More info here https://www.sidefx.com/docs/houdini/ref/plugins.html
 
@@ -35,7 +37,6 @@ More info here https://www.sidefx.com/docs/houdini/ref/plugins.html
 
 Here and next, HDRPR_PACKAGE_DIR is a path to the root of the package.
 
-* Set `RPR` environment variable to `HDRPR_PACKAGE_DIR` 
 * Add `HDRPR_PACKAGE_DIR/plugin` path entry to the `PXR_PLUGINPATH_NAME` environment variable
 * Add `HDRPR_PACKAGE_DIR/lib/python` path entry to the `PYTHONPATH` environment variable
 * Windows only: add the `HDRPR_PACKAGE_DIR/lib` path entry to the `PATH` environment variable

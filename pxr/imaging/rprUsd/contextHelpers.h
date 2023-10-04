@@ -15,18 +15,23 @@ limitations under the License.
 #define PXR_IMAGING_RPR_USD_CONTEXT_HELPERS_H
 
 #include "pxr/imaging/rprUsd/api.h"
+#include "pxr/imaging/rprUsd/contextMetadata.h"
 
 namespace rpr { class Context; }
 
 PXR_NAMESPACE_OPEN_SCOPE
 
-struct RprUsdContextMetadata;
-
 RPRUSD_API
 rpr::Context* RprUsdCreateContext(RprUsdContextMetadata* metadata);
 
 RPRUSD_API
+RprUsdDevicesInfo RprUsdGetDevicesInfo(RprUsdPluginType pluginType);
+
+RPRUSD_API
 bool RprUsdIsTracingEnabled();
+
+RPRUSD_API
+bool RprUsdIsCpuOnly();
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

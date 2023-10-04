@@ -57,7 +57,8 @@ HdRprApiAov::HdRprApiAov(rpr_aov rprAovType, int width, int height, HdFormat for
                          rpr::Context* rprContext, RprUsdContextMetadata const& rprContextMetadata, std::unique_ptr<rif::Filter> filter)
     : m_aovDescriptor(HdRprAovRegistry::GetInstance().GetAovDesc(rprAovType, false))
     , m_filter(std::move(filter))
-    , m_format(format) {
+    , m_upscaleFilter(nullptr)
+    , m_format(format), m_width(width), m_height(height) {
     if (rif::Image::GetDesc(0, 0, format).type == 0) {
         RIF_THROW_ERROR_MSG("Unsupported format: " + TfEnum::GetName(format));
     }
@@ -66,7 +67,7 @@ HdRprApiAov::HdRprApiAov(rpr_aov rprAovType, int width, int height, HdFormat for
     m_aov->AttachAs(rprAovType);
 
     // XXX (Hybrid): Hybrid plugin does not support framebuffer resolving (rprContextResolveFrameBuffer)
-    if (rprContextMetadata.pluginType != kPluginHybrid) {
+    if (!RprUsdIsHybrid(rprContextMetadata.pluginType)) {
         m_resolved = pxr::make_unique<HdRprApiFramebuffer>(rprContext, width, height);
     }
 }
@@ -78,6 +79,16 @@ HdRprApiAov::HdRprApiAov(rpr_aov rprAovType, int width, int height, HdFormat for
             // RPR framebuffers by default with such format
             return nullptr;
         }
+        if (!rifContext)
+        {
+            if (format == HdFormatFloat32) {
+                return nullptr;
+            }
+            if (format == HdFormatInt32) {
+                return nullptr;
+            }
+            RPR_THROW_ERROR_MSG("Only Float32Vec4, Float32, and Int32 data types are supported without rifContext.");
+        }
 
         auto filter = rif::Filter::CreateCustom(RIF_IMAGE_FILTER_RESAMPLE, rifContext);
         if (!filter) {
@@ -87,7 +98,6 @@ HdRprApiAov::HdRprApiAov(rpr_aov rprAovType, int width, int height, HdFormat for
         filter->SetParam("interpOperator", (int) RIF_IMAGE_INTERPOLATION_NEAREST);
         return filter;
     }()) {
-
 }
 
 void HdRprApiAov::Resolve() {
@@ -97,6 +107,9 @@ void HdRprApiAov::Resolve() {
 
     if (m_filter) {
         m_filter->Resolve();
+    }
+    if (m_upscaleFilter) {
+        m_upscaleFilter->Resolve();
     }
 }
 
@@ -120,28 +133,151 @@ bool HdRprApiAov::GetDataImpl(void* dstBuffer, size_t dstBufferSize) {
     return resolvedFb->GetData(dstBuffer, dstBufferSize);
 }
 
-bool HdRprApiAov::GetData(void* dstBuffer, size_t dstBufferSize) {
-    if (GetDataImpl(dstBuffer, dstBufferSize)) {
-        if (m_format == HdFormatInt32) {
-            // RPR store integer ID values to RGB images using such formula:
-            // c[i].x = i;
-            // c[i].y = i/256;
-            // c[i].z = i/(256*256);
-            // i.e. saving little endian int24 to uchar3
-            // That's why we interpret the value as int and filling the alpha channel with zeros
-            auto primIdData = reinterpret_cast<int*>(dstBuffer);
-            for (size_t i = 0; i < dstBufferSize / sizeof(int); ++i) {
-                primIdData[i] = (primIdData[i] & 0xFFFFFF) - 1;
+bool HdRprApiAov::InitUpscaleFilter(rif::Context* rifContext) {
+    if (!rifContext) {
+        return false;
+    }
+    if (m_upscaleFilter) {
+        return true;
+    }
+    m_upscaleFilter = rif::Filter::CreateCustom(RIF_IMAGE_FILTER_AI_UPSCALE, rifContext);
+    if (!m_upscaleFilter) {
+        return false;
+    }
+    m_upscaleFilter->SetParam("mode", (int) RIF_AI_UPSCALE_MODE_FAST_2X);
+    m_upscaleFilter->SetParam("useHDR", 1);
+    m_upscaleFilter->SetParam("modelPath", rifContext->GetModelPath().c_str());
+    m_upscaleFilter->Resize(m_width, m_height);
+    m_upscaleFilter->SetOutput(rif::Image::GetDesc(m_width * 2, m_height * 2, m_format));
+    return true;
+}
+
+bool HdRprApiAov::GetUpscaledDataImpl(void* dstBuffer, size_t dstBufferSize, rif::Context* rifContext) {
+    if (!m_upscaleFilter) {
+        if (!InitUpscaleFilter(rifContext)) {
+            return false;
+        }
+    }
+    
+    if (!ReadRifImage(m_upscaleFilter->GetOutput(), dstBuffer, dstBufferSize))
+    {
+        return false;
+    }
+
+    if (m_oddWidth) {
+        size_t pixelSize = HdDataSizeOfFormat(m_format);
+        for (size_t i = (size_t)m_height * 2 - 1; i > 0; --i) {
+            memmove((char*)dstBuffer + i * ((size_t)m_width * 2 + 1) * pixelSize, (char*)dstBuffer + i * (size_t)m_width * 2 * pixelSize, (size_t)m_width * 2 * pixelSize);
+        }
+    }
+
+    return true;
+}
+
+void HdRprApiAov::SetUpSizeAndBuffer(void*& getBuffer, size_t& dstBufferSize) {
+    if (!m_filter)
+    {
+        bool needTmpBuffer = true;
+        // Rpr always renders to HdFormatFloat32Vec4
+        // If RIF is enabled then m_filter will cast to the desired type.
+        // But if RIF isn't enabled we must do the cast ourselves here.
+        //
+        // When this function is called dstBufferSize is set to the desired format buffer size.
+        // We must allocate m_tmpBuffer to size of a HdFormatFloat32Vec4 buffer.
+        // For both Float32 and Int32 we do this by multiplying the desired format buffer size by 4.
+        if (m_format == HdFormatFloat32) {
+            dstBufferSize = dstBufferSize * 4;
+        }
+        else if (m_format == HdFormatInt32) {
+            dstBufferSize = dstBufferSize * 4;
+        }
+        else {
+            needTmpBuffer = false;
+        }
+        if (needTmpBuffer)
+        {
+            if (m_tmpBuffer.size() < dstBufferSize)
+            {
+                m_tmpBuffer.resize(dstBufferSize);
+            }
+            getBuffer = m_tmpBuffer.data();
+        }
+    }
+}
+
+void HdRprApiAov::ApplyFormatToOutput(void* getBuffer, void* dstBuffer, size_t dstBufferSize) {
+    if (!m_filter)
+    {
+        if (m_format == HdFormatFloat32) {
+            auto srcData = reinterpret_cast<const GfVec4f*>(getBuffer);
+            auto dstData = reinterpret_cast<float*>(dstBuffer);
+            for (size_t i = 0; i < dstBufferSize / sizeof(GfVec4f); ++i) {
+                dstData[i] = srcData[i][0];
             }
         }
+        if (m_format == HdFormatInt32) {
+            auto srcData = reinterpret_cast<const float*>(getBuffer);
+            auto dstData = reinterpret_cast<char*>(dstBuffer);
+            for (size_t i = 0; i < dstBufferSize / sizeof(float); ++i)
+            {
+                if (i % 4 == 3)
+                {
+                    dstData[i] = 0;
+                }
+                else
+                {
+                    dstData[i] = (char)(srcData[i] * 255 + 0.5f);
+                }
+            }
 
+            auto primIdData = reinterpret_cast<int*>(dstBuffer);
+            for (size_t i = 0; i < dstBufferSize / sizeof(GfVec4f); ++i)
+            {
+                primIdData[i] -= 1;
+            }
+        }
+    }
+    else if (m_format == HdFormatInt32) {
+        // RPR store integer ID values to RGB images using such formula:
+        // c[i].x = i;
+        // c[i].y = i/256;
+        // c[i].z = i/(256*256);
+        // i.e. saving little endian int24 to uchar3
+        // That's why we interpret the value as int and filling the alpha channel with zeros
+        auto primIdData = reinterpret_cast<int*>(dstBuffer);
+        for (size_t i = 0; i < dstBufferSize / sizeof(int); ++i) {
+            primIdData[i] = (primIdData[i] & 0xFFFFFF) - 1;
+        }
+    }
+}
+
+bool HdRprApiAov::GetData(void* dstBuffer, size_t dstBufferSize) {
+    auto getBuffer = dstBuffer;
+    SetUpSizeAndBuffer(getBuffer, dstBufferSize);
+    if (GetDataImpl(getBuffer, dstBufferSize)) {
+        ApplyFormatToOutput(getBuffer, dstBuffer, dstBufferSize);
         return true;
     }
 
     return false;
 }
 
-void HdRprApiAov::Resize(int width, int height, HdFormat format) {
+bool HdRprApiAov::GetUpscaledData(void* dstBuffer, size_t dstBufferSize, rif::Context* rifContext) {
+    auto getBuffer = dstBuffer;
+    SetUpSizeAndBuffer(getBuffer, dstBufferSize);
+    if (GetUpscaledDataImpl(dstBuffer, dstBufferSize, rifContext)) {
+        ApplyFormatToOutput(getBuffer, dstBuffer, dstBufferSize);
+        return true;
+    }
+
+    return false;
+}
+
+void HdRprApiAov::Resize(int width, int height, HdFormat format, bool oddWidth) {
+    m_width = width;
+    m_height = height;
+    m_oddWidth = oddWidth;
+
     if (m_format != format) {
         m_format = format;
         m_dirtyBits |= ChangeTracker::DirtyFormat;
@@ -168,6 +304,10 @@ void HdRprApiAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) {
     if (m_filter) {
         m_filter->Update();
     }
+
+    if (m_upscaleFilter) {
+        m_upscaleFilter->Update();
+    }
 }
 
 HdRprApiFramebuffer* HdRprApiAov::GetResolvedFb() {
@@ -193,12 +333,22 @@ void HdRprApiAov::OnSizeChange(rif::Context* rifContext) {
         m_filter->SetOutput(rif::Image::GetDesc(fbDesc.fb_width, fbDesc.fb_height, m_format));
         m_filter->SetParam("outSize", GfVec2i(fbDesc.fb_width, fbDesc.fb_height));
     }
+    if (m_upscaleFilter) {
+        auto fbDesc = m_aov->GetDesc();
+        m_upscaleFilter->Resize(fbDesc.fb_width, fbDesc.fb_height);
+        if (m_filter) {
+            m_upscaleFilter->SetInput(rif::Color, m_filter->GetOutput());
+        }
+        else {
+            m_upscaleFilter->SetInput(rif::Color, GetResolvedFb());
+        }
+        m_upscaleFilter->SetOutput(rif::Image::GetDesc(fbDesc.fb_width * 2, fbDesc.fb_height * 2, m_format));
+    }
 }
 
 HdRprApiColorAov::HdRprApiColorAov(HdFormat format, std::shared_ptr<HdRprApiAov> rawColorAov, rpr::Context* rprContext, RprUsdContextMetadata const& rprContextMetadata)
-    : HdRprApiAov(HdRprAovRegistry::GetInstance().GetAovDesc(rpr::Aov(kColorAlpha), true), format)
+    : HdRprApiAov(HdRprAovRegistry::GetInstance().GetAovDesc(rpr::Aov(kColorAlpha), true), 0, 0, format)
     , m_retainedRawColor(std::move(rawColorAov)) {
-
 }
 
 void HdRprApiColorAov::SetFilter(Filter filter, bool enable) {
@@ -314,6 +464,30 @@ void HdRprApiColorAov::SetTonemap(TonemapParams const& params) {
     }
 }
 
+void HdRprApiColorAov::SetGamma(GammaParams const& params) {
+    bool isGammaEnabled = m_enabledFilters & kFilterGamma;
+    bool gammaEnableDirty = params.enable != isGammaEnabled;
+    
+    SetFilter(kFilterGamma, params.enable);
+
+    if (m_gamma != params) {
+        m_gamma = params;
+
+        if (!gammaEnableDirty && isGammaEnabled) {
+            if (m_mainFilterType == kFilterGamma) {
+                m_filter.get()->SetParam("gamma", m_gamma.value);
+            } else {
+                for (auto& entry : m_auxFilters) {
+                    if (entry.first == kFilterGamma) {
+                        entry.second.get()->SetParam("gamma", m_gamma.value);
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
 void HdRprApiColorAov::SetTonemapFilterParams(rif::Filter* filter) {
     filter->SetParam("exposureTime", m_tonemap.exposureTime);
     filter->SetParam("sensitivity", m_tonemap.sensitivity);
@@ -326,14 +500,12 @@ bool HdRprApiColorAov::CanComposeAlpha() {
     return HdGetComponentCount(m_format) == 4 && m_retainedOpacity;
 }
 
-void HdRprApiColorAov::Resize(int width, int height, HdFormat format) {
+void HdRprApiColorAov::Resize(int width, int height, HdFormat format, bool oddWidth) {
     if (m_width != width || m_height != height) {
-        m_width = width;
-        m_height = height;
         m_dirtyBits |= ChangeTracker::DirtySize;
     }
 
-    HdRprApiAov::Resize(width, height, format);
+    HdRprApiAov::Resize(width, height, format, oddWidth);
 }
 
 void HdRprApiColorAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) {
@@ -357,7 +529,8 @@ void HdRprApiColorAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) 
         if ((m_enabledFilters & kFilterAIDenoise) ||
             (m_enabledFilters & kFilterEAWDenoise) ||
             (m_enabledFilters & kFilterComposeOpacity) ||
-            (m_enabledFilters & kFilterTonemap)) {
+            (m_enabledFilters & kFilterTonemap) ||
+            (m_enabledFilters & kFilterGamma)) {
 
             auto addFilter = [this, &filterPool](Filter type, std::function<std::unique_ptr<rif::Filter>()> filterCreator) {
                 std::unique_ptr<rif::Filter> filter;
@@ -385,6 +558,14 @@ void HdRprApiColorAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) 
                 );
             }
 
+            if (m_enabledFilters & kFilterGamma) {
+                addFilter(kFilterGamma,
+                    [rifContext]() {
+                        return rif::Filter::CreateCustom(RIF_IMAGE_FILTER_GAMMA_CORRECTION, rifContext);
+                    }
+                );
+            }
+
             if ((m_enabledFilters & kFilterAIDenoise) ||
                 (m_enabledFilters & kFilterEAWDenoise)) {
                 auto type = (m_enabledFilters & kFilterAIDenoise) ? kFilterAIDenoise : kFilterEAWDenoise;
@@ -392,7 +573,8 @@ void HdRprApiColorAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) 
                     [this, rifContext]() {
                         auto denoiseFilterType = (m_enabledFilters & kFilterAIDenoise) ? rif::FilterType::AIDenoise : rif::FilterType::EawDenoise;
                         auto fbDesc = m_retainedRawColor->GetAovFb()->GetDesc();
-                        return rif::Filter::Create(denoiseFilterType, rifContext, fbDesc.fb_width, fbDesc.fb_height);
+                        auto filter = rif::Filter::Create(denoiseFilterType, rifContext, fbDesc.fb_width, fbDesc.fb_height);
+                        return filter;
                     }
                 );
             }
@@ -433,6 +615,18 @@ void HdRprApiColorAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) 
     }
     if (m_filter) {
         m_filter->Update();
+    }
+    if (m_upscaleFilter) {
+        if (m_filter) {
+            m_upscaleFilter->SetInput(rif::Color, m_filter->GetOutput());
+        }
+        else {
+            if (auto resolvedRawColorFb = m_retainedRawColor->GetResolvedFb()) {
+                m_upscaleFilter->SetInput(rif::Color, resolvedRawColorFb);
+            }
+        }
+        m_upscaleFilter->SetOutput(rif::Image::GetDesc(m_width * 2, m_height * 2, m_format));
+        m_upscaleFilter->Update();
     }
 }
 
@@ -480,21 +674,24 @@ void HdRprApiColorAov::ResizeFilter(int width, int height, Filter filterType, ri
         filter->SetParam("outSize", GfVec2i(width, height));
     } else if (filterType == kFilterTonemap) {
         SetTonemapFilterParams(filter);
+    } else if (filterType == kFilterGamma) {
+        filter->SetParam("gamma", m_gamma.value);
     }
 }
 
 void HdRprApiColorAov::OnSizeChange(rif::Context* rifContext) {
+    auto fbDesc = m_retainedRawColor->GetAovFb()->GetDesc();
+
     if (!m_filter) {
         return;
     }
 
-    auto fbDesc = m_retainedRawColor->GetAovFb()->GetDesc();
     if (m_auxFilters.empty()) {
         ResizeFilter(fbDesc.fb_width, fbDesc.fb_height, m_mainFilterType, m_filter.get(), m_retainedRawColor->GetResolvedFb());
     } else {
         // Ideally we would use "Filter combining" functionality, but it does not work with user-defined filter
         // So we attach each filter separately
-
+        
         auto filter = m_auxFilters.front().second.get();
         ResizeFilter(fbDesc.fb_width, fbDesc.fb_height, m_auxFilters.front().first, filter, m_retainedRawColor->GetResolvedFb());
         for (int i = 1; i < m_auxFilters.size(); ++i) {
@@ -502,6 +699,11 @@ void HdRprApiColorAov::OnSizeChange(rif::Context* rifContext) {
             ResizeFilter(fbDesc.fb_width, fbDesc.fb_height, m_auxFilters[i].first, m_auxFilters[i].second.get(), filterInput);
         }
         ResizeFilter(fbDesc.fb_width, fbDesc.fb_height, m_mainFilterType, m_filter.get(), m_auxFilters.back().second->GetOutput());
+    }
+
+    if (m_upscaleFilter) {
+        m_upscaleFilter->Resize(fbDesc.fb_width, fbDesc.fb_height);
+        m_upscaleFilter->SetOutput(rif::Image::GetDesc(fbDesc.fb_width * 2, fbDesc.fb_height * 2, m_format));
     }
 }
 
@@ -527,37 +729,61 @@ void HdRprApiNormalAov::OnSizeChange(rif::Context* rifContext) {
     m_filter->Resize(fbDesc.fb_width, fbDesc.fb_height);
     m_filter->SetInput(rif::Color, GetResolvedFb());
     m_filter->SetOutput(rif::Image::GetDesc(fbDesc.fb_width, fbDesc.fb_height, m_format));
+
+    if (m_upscaleFilter) {
+        m_upscaleFilter->Resize(fbDesc.fb_width, fbDesc.fb_height);
+        m_upscaleFilter->SetInput(rif::Color, m_filter->GetOutput());
+        m_upscaleFilter->SetOutput(rif::Image::GetDesc(fbDesc.fb_width * 2, fbDesc.fb_height * 2, m_format));
+    }
 }
 
-void HdRprApiComputedAov::Resize(int width, int height, HdFormat format) {
+void HdRprApiComputedAov::Resize(int width, int height, HdFormat format, bool oddWidth) {
     if (m_format != format) {
         m_format = format;
         m_dirtyBits |= ChangeTracker::DirtyFormat;
     }
 
     if (m_width != width || m_height != height) {
-        m_width = width;
-        m_height = height;
         m_dirtyBits |= ChangeTracker::DirtySize;
     }
+
+    HdRprApiAov::Resize(width, height, format, oddWidth);
 }
 
 HdRprApiDepthAov::HdRprApiDepthAov(
     int width, int height, HdFormat format,
     std::shared_ptr<HdRprApiAov> worldCoordinateAov,
+    std::shared_ptr<HdRprApiAov> opacityAov,
     rpr::Context* rprContext, RprUsdContextMetadata const& rprContextMetadata, rif::Context* rifContext)
     : HdRprApiComputedAov(HdRprAovRegistry::GetInstance().GetAovDesc(rpr::Aov(kNdcDepth), true), width, height, format)
-    , m_retainedWorldCoordinateAov(worldCoordinateAov) {
+    , m_retainedWorldCoordinateAov(worldCoordinateAov)
+    , m_retainedOpacityAov(opacityAov){
+
     if (!rifContext) {
         RPR_THROW_ERROR_MSG("Can not create depth AOV: RIF context required");
     }
 
-    m_filter = rif::Filter::CreateCustom(RIF_IMAGE_FILTER_NDC_DEPTH, rifContext);
-    m_ndcFilter = m_filter.get();
+    m_retainedNDCFilter = rif::Filter::CreateCustom(RIF_IMAGE_FILTER_NDC_DEPTH, rifContext);
+    m_ndcFilter = m_retainedNDCFilter.get();
+
+    m_filter= rif::Filter::CreateCustom(RIF_IMAGE_FILTER_USER_DEFINED, rifContext);
+
+    auto opacityComposingKernelCode = std::string(R"(
+                            int2 coord;
+                            GET_COORD_OR_RETURN(coord, GET_BUFFER_SIZE(inputImage));
+                            vec4 alpha = ReadPixelTyped(alphaImage, coord.x, coord.y);
+                            vec4 color = ReadPixelTyped(inputImage, coord.x, coord.y);
+                            if (alpha.x == 0) {
+                                color = make_vec4(1.f, 1.f, 1.f, 1.f);
+                            }
+                            WritePixelTyped(outputImage, coord.x, coord.y, color);
+                        )");
+    m_filter->SetParam("code", opacityComposingKernelCode);
+    m_opacityFilter = m_filter.get();
     m_remapFilter = nullptr;
 
 #if PXR_VERSION >= 2002
-    m_retainedFilter = std::move(m_filter);
+    m_retainedOpacityFilter = std::move(m_filter);
 
     m_filter = rif::Filter::CreateCustom(RIF_IMAGE_FILTER_REMAP_RANGE, rifContext);
     m_filter->SetParam("srcRangeAuto", 0);
@@ -573,14 +799,14 @@ void HdRprApiDepthAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) 
     if (m_dirtyBits & ChangeTracker::DirtyFormat ||
         m_dirtyBits & ChangeTracker::DirtySize) {
 
+        m_ndcFilter->SetInput(rif::Color, m_retainedWorldCoordinateAov->GetResolvedFb());
+        m_ndcFilter->SetOutput(rif::Image::GetDesc(m_width, m_height, m_format));
+        m_opacityFilter->SetInput(rif::Color, m_ndcFilter->GetOutput());
+        m_opacityFilter->SetInput("alphaImage", m_retainedOpacityAov->GetResolvedFb());
+        m_opacityFilter->SetOutput(rif::Image::GetDesc(m_width, m_height, m_format));
         if (m_remapFilter) {
-            m_ndcFilter->SetInput(rif::Color, m_retainedWorldCoordinateAov->GetResolvedFb());
-            m_ndcFilter->SetOutput(rif::Image::GetDesc(m_width, m_height, m_format));
-            m_remapFilter->SetInput(rif::Color, m_ndcFilter->GetOutput());
+            m_remapFilter->SetInput(rif::Color, m_opacityFilter->GetOutput());
             m_remapFilter->SetOutput(rif::Image::GetDesc(m_width, m_height, m_format));
-        } else {
-            m_ndcFilter->SetInput(rif::Color, m_retainedWorldCoordinateAov->GetResolvedFb());
-            m_ndcFilter->SetOutput(rif::Image::GetDesc(m_width, m_height, m_format));
         }
     }
     m_dirtyBits = ChangeTracker::Clean;
@@ -589,8 +815,14 @@ void HdRprApiDepthAov::Update(HdRprApi const* rprApi, rif::Context* rifContext) 
     m_ndcFilter->SetParam("viewProjMatrix", GfMatrix4f(viewProjectionMatrix.GetTranspose()));
 
     m_ndcFilter->Update();
+    m_opacityFilter->Update();
     if (m_remapFilter) {
         m_remapFilter->Update();
+    }
+    if (m_upscaleFilter) {
+        m_upscaleFilter->SetInput(rif::Color, m_filter->GetOutput());
+        m_upscaleFilter->SetOutput(rif::Image::GetDesc(m_width * 2, m_height * 2, m_format));
+        m_upscaleFilter->Update();
     }
 }
 
@@ -598,8 +830,14 @@ void HdRprApiDepthAov::Resolve() {
     if (m_ndcFilter) {
         m_ndcFilter->Resolve();
     }
+    if (m_opacityFilter) {
+        m_opacityFilter->Resolve();
+    }
     if (m_remapFilter) {
         m_remapFilter->Resolve();
+    }
+    if (m_upscaleFilter) {
+        m_upscaleFilter->Resolve();
     }
 }
 
@@ -652,6 +890,117 @@ void HdRprApiIdMaskAov::Update(HdRprApi const* rprApi, rif::Context* rifContext)
     if (m_filter) {
         m_filter->Update();
     }
+}
+
+HdRprApiScCompositeAOV::HdRprApiScCompositeAOV(int width, int height, HdFormat format,
+    std::shared_ptr<HdRprApiAov> rawColorAov,
+    std::shared_ptr<HdRprApiAov> opacityAov,
+    std::shared_ptr<HdRprApiAov> scAov,
+    rpr::Context* rprContext, RprUsdContextMetadata const& rprContextMetadata, rif::Context* rifContext)
+    : HdRprApiAov(HdRprAovRegistry::GetInstance().GetAovDesc(rpr::Aov(kScTransparentBackground), true), width, height, format)
+    , m_retainedRawColorAov(rawColorAov)
+    , m_retainedOpacityAov(opacityAov)
+    , m_retainedScAov(scAov)
+{
+} 
+
+bool HdRprApiScCompositeAOV::GetDataImpl(void* dstBuffer, size_t dstBufferSize) {
+    if (m_tempColorBuffer.size() < dstBufferSize / sizeof(GfVec4f)) {
+        m_tempColorBuffer.resize(dstBufferSize / sizeof(GfVec4f));
+    }
+    if (m_tempOpacityBuffer.size() < dstBufferSize / sizeof(GfVec4f)) {
+        m_tempOpacityBuffer.resize(dstBufferSize / sizeof(GfVec4f));
+    }
+    if (m_tempScBuffer.size() < dstBufferSize / sizeof(GfVec4f)) {
+        m_tempScBuffer.resize(dstBufferSize / sizeof(GfVec4f));
+    }
+
+    if (!m_retainedRawColorAov->GetDataImpl((void*)m_tempColorBuffer.data(), dstBufferSize)) {
+        return false;
+    }
+    if (!m_retainedOpacityAov->GetDataImpl((void*)m_tempOpacityBuffer.data(), dstBufferSize)) {
+        return false;
+    }
+    if (!m_retainedScAov->GetDataImpl((void*)m_tempScBuffer.data(), dstBufferSize)) {
+        return false;
+    }
+
+    auto dstValue = reinterpret_cast<GfVec4f*>(dstBuffer);
+
+    // On this stage format is always HdFormatFloat32Vec4
+    #pragma omp parallel for
+    for (int i = 0; i < dstBufferSize / sizeof(GfVec4f); i++) 
+    {  
+        float opacity = m_tempOpacityBuffer[i][0];
+        float sc = m_tempScBuffer[i][0];
+        constexpr float OneMinusEpsilon = 1.0f - 1e-5f;
+
+        if (opacity > OneMinusEpsilon)
+        {
+            dstValue[i] = { m_tempColorBuffer[i][0], m_tempColorBuffer[i][1], m_tempColorBuffer[i][2], opacity };
+		}
+        else
+        {
+            // Add shadows from the shadow catcher to the final image + Make the background transparent;
+            dstValue[i] = { 0.0f, 0.0f, 0.0f, sc };         
+        }
+    }
+
+    return true;
+}
+
+bool HdRprApiScCompositeAOV::InitUpscaleFilter(rif::Context* rifContext) {
+    if (!m_retainedRawColorAov || !m_retainedOpacityAov || !m_retainedScAov) {
+        return false;
+    }
+    return m_retainedRawColorAov->InitUpscaleFilter(rifContext)
+        && m_retainedOpacityAov->InitUpscaleFilter(rifContext)
+        && m_retainedScAov->InitUpscaleFilter(rifContext);
+}
+
+bool HdRprApiScCompositeAOV::GetUpscaledDataImpl(void* dstBuffer, size_t dstBufferSize, rif::Context* rifContext) {
+    if (m_tempColorBuffer.size() < dstBufferSize / sizeof(GfVec4f)) {
+        m_tempColorBuffer.resize(dstBufferSize / sizeof(GfVec4f));
+    }
+    if (m_tempOpacityBuffer.size() < dstBufferSize / sizeof(GfVec4f)) {
+        m_tempOpacityBuffer.resize(dstBufferSize / sizeof(GfVec4f));
+    }
+    if (m_tempScBuffer.size() < dstBufferSize / sizeof(GfVec4f)) {
+        m_tempScBuffer.resize(dstBufferSize / sizeof(GfVec4f));
+    }
+
+    if (!m_retainedRawColorAov->GetUpscaledDataImpl((void*)m_tempColorBuffer.data(), dstBufferSize, rifContext)) {
+        return false;
+    }
+    if (!m_retainedOpacityAov->GetUpscaledDataImpl((void*)m_tempOpacityBuffer.data(), dstBufferSize, rifContext)) {
+        return false;
+    }
+    if (!m_retainedScAov->GetUpscaledDataImpl((void*)m_tempScBuffer.data(), dstBufferSize, rifContext)) {
+        return false;
+    }
+
+    auto dstValue = reinterpret_cast<GfVec4f*>(dstBuffer);
+
+    // On this stage format is always HdFormatFloat32Vec4
+    #pragma omp parallel for
+    for (int i = 0; i < dstBufferSize / sizeof(GfVec4f); i++)
+    {
+        float opacity = m_tempOpacityBuffer[i][0];
+        float sc = m_tempScBuffer[i][0];
+        constexpr float OneMinusEpsilon = 1.0f - 1e-5f;
+
+        if (opacity > OneMinusEpsilon)
+        {
+            dstValue[i] = { m_tempColorBuffer[i][0], m_tempColorBuffer[i][1], m_tempColorBuffer[i][2], opacity };
+        }
+        else
+        {
+            // Add shadows from the shadow catcher to the final image + Make the background transparent;
+            dstValue[i] = { 0.0f, 0.0f, 0.0f, sc };
+        }
+    }
+
+    return true;
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE

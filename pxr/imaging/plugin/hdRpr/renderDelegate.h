@@ -16,12 +16,17 @@ limitations under the License.
 
 #include "api.h"
 #include "renderThread.h"
+#include "config.h"
 
 #include "pxr/imaging/hd/renderDelegate.h"
 
 PXR_NAMESPACE_OPEN_SCOPE
 
 #if PXR_VERSION >= 2102
+#define USE_DECOUPLED_INSTANCER
+#endif
+
+#ifdef USE_DECOUPLED_INSTANCER
 #define HDRPR_INSTANCER_ID_ARG_DECL
 #define HDRPR_INSTANCER_ID_ARG
 #else
@@ -75,7 +80,7 @@ public:
     void CommitResources(HdChangeTracker* tracker) override;
 
     TfToken GetMaterialBindingPurpose() const override { return HdTokens->full; }
-    TfToken GetMaterialNetworkSelector() const override;
+    TfTokenVector GetMaterialRenderContexts() const;
 
     HdAovDescriptor GetDefaultAovDescriptor(TfToken const& name) const override;
 
@@ -89,10 +94,20 @@ public:
 
 #if PXR_VERSION >= 2005
     bool IsStopSupported() const override;
+#if PXR_VERSION >= 2203
+    bool Stop(bool blocking = true) override;
+#else
     bool Stop() override;
+#endif
     bool Restart() override;
     void SetDrivers(HdDriverVector const& drivers) override;
 #endif // PXR_VERSION >= 2005
+
+    std::unique_lock<std::mutex> LockConfigInstance(HdRprConfig** outConfig) {
+        static std::mutex instanceMutex;
+        *outConfig = &m_configInstance;
+        return std::unique_lock<std::mutex>(instanceMutex);
+    }
 
 private:
     static const TfTokenVector SUPPORTED_RPRIM_TYPES;
@@ -106,14 +121,18 @@ private:
 
     using DiagnostMgrDelegatePtr = std::unique_ptr<HdRprDiagnosticMgrDelegate, std::function<void (HdRprDiagnosticMgrDelegate*)>>;
     DiagnostMgrDelegatePtr m_diagnosticMgrDelegate;
+
+    // Static last created instance required for extern C methods
+    static HdRprDelegate* m_lastCreatedInstance;
+
+    // Config should be retrieved with LockConfigInstance() to provide thread-safety
+    HdRprConfig m_configInstance;
 };
 
 
 PXR_NAMESPACE_CLOSE_SCOPE
 
 extern "C" {
-
-HDRPR_API void HdRprSetRenderDevice(const char* renderDevice);
 
 HDRPR_API void HdRprSetRenderQuality(const char* quality);
 

@@ -1,5 +1,87 @@
 # Change Log
 
+## Version 2.4
+### New Features:
+- The RPR Final mode now uses AMD’s HIP for running on the GPU. This increases download package size for now, but allows faster first renders as the kernels are pre-compiled.
+- The RPR Interactive mode has been improved with the following developments:
+ - Displacement support;
+ - Better MaterialX support;
+ - Lookup UV nodes support;
+ - Support for GPUs with less than 8 GB VRAM;
+ - Support for GPUs without hardware-accelerated ray tracing.
+- The Interactive mode settings to use RESTIR-based direct lighting and FSR2 upscaling have been added. These by default should give excellent interactivity when rendering in the viewport.
+- Support for Houdini .rat textures has been added.
+- Support for USD version 23.02 has been added.
+
+### Bugs Fixed:
+- A bug on Nvidia caused by a driver update has been fixed. (We now use the HIP feature to compile kernels to CUDA, avoiding buggy OpenCL implementations).
+- The AOV “scTransparentBackground” has been renamed to “ColorWithTransparency” for clarity.
+- Artifacts with the Interactive mode (Hybrid Pro) using MaterialX have been fixed.
+- Tiled rendering with orthographic cameras has been fixed.
+- Dome light rotations were incorrect — fixed.
+- Incorrect renders with per-face materials have been fixed.
+- More UI and settings have been added for Toon Materials.
+- The UV AOV was showing incorrectly in the Houdini MPlay viewer — fixed.
+- IES lights now correctly use the Z direction. They were using the Y direction.
+- Default material can now be applied to points for rendering. Sphere points now look more rounded with smooth normals.
+- Support for light linking of Toon shaders has been added.
+- OpenVDB volumes have been fixed to work again.
+- A random seed setting has been added to jitter the noise in a render.
+
+
+## Version 2.3
+### New Features:
+- Support for Houdini 19.5 has been added.
+- Support for USD 22.05 has been added.
+- The RPR Interactive mode has been improved with the following developments:
+  - Better support for more shader node types;
+  - Even faster rendering with optimized settings out of the box;
+  - Hair rendering support;
+  - More AOVs supported;
+  - Support for OpenColorIO texture spaces;
+  - Now supported on Linux.
+- Instance and Object ID AOVs are now supported.
+
+### Bugs Fixed:
+- The RPR Interactive mode’s ray depths settings are now correctly applied when rendering. 
+- Files that have relative paths to textures are now processed correctly.
+- A setting for Pixel Filter (antialiasing) has been added.
+- The USD setting for scene units is now supported correctly This is applied to transforms and the Depth AOV. In Houdini the compositing with the background grid in the viewport is now correct.
+- Vertex color primitive variables are now supported, in particular the “Display Color” setting.
+- The first UV channel (even if not named “st”) is now exported and used.
+- The speed of exporting MaterialX files has been improved greatly.
+- Tiled rendering with Perspective Cameras now works correctly.
+
+
+## Version 2.2
+### New Features:
+- Support of Houdini 19.  Houdini 19 adds MaterialX nodes which Radeon ProRender supports through the plug-in.
+- Updates to the Render Quality modes: 
+    - RPR Interactive is a new mode supporting GPUs which use the Vulkan ray tracing extension, and is optimized for fast viewport rendering;
+    - RPR Final, previously Full” mode. It is intended “” for final rendering the utmost physical correctness and image quality;
+    - Both modes render similar images;
+    - Both modes support full MaterialX shader networks.
+
+### Bugs Fixed
+- Support of camera aperture offset has been added.
+- Multiple render devices as well as CPU + GPU rendering can now be selected.
+- Single color VDB volumes now work using the “gain” parameter.
+- The performance of rendering in the RPR Final mode using adaptive sampling has been improved by optimizing the active pixels check.
+- The new Gamma Tonemap filter has been added.
+- A setting for using UV to generate Outline renders has been added.
+- An issue of incorrect Subsurface Scattering on Vega GPUS has been added.
+- Black rendering of toon shaders on macOS has been fixed.
+- A crash that could occur when processing emission shaders objects with subdivision added has been eliminated.
+- The startup time for CPU rendering has been reduced.
+- Low utilization on macOS with CPU + GPU rendering has been eliminated.
+- Performance in scenes with multiple transparent materials has been improved.
+- An issue with artifacts in alpha texture masks has been fixed.
+- The render performance on Vega and Polaris GPUs has been improved.
+- Particle motion blur on GPUs has been fixed.
+- A crash that could occur when using .tif textures with zip compression has been eliminated.
+- An issue with emission shaders disappearing in volume objects has been eliminated.
+
+
 ## Version 2.1
 ### New Features:
 - Subsurface Scattering and Volume shaders now work in RPR 2.0.  This allows the rendering of organic materials, such as skin, which absorb light into their interior.

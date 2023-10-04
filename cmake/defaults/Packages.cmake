@@ -54,6 +54,28 @@ if(NOT pxr_FOUND AND NOT HoudiniUSD_FOUND AND NOT USDMonolithic_FOUND)
     message(FATAL_ERROR "Required: USD install or Houdini with included USD.")
 endif()
 
+if (NOT PYTHON_EXECUTABLE)
+    set(build_schema_python_exec "python")
+else()
+    set(build_schema_python_exec ${PYTHON_EXECUTABLE})
+endif()
+
+if(NOT HoudiniUSD_FOUND)
+    list(APPEND CMAKE_PREFIX_PATH ${pxr_DIR})
+    find_program(USD_SCHEMA_GENERATOR
+        NAMES usdGenSchema.py usdGenSchema
+        PATHS ${pxr_DIR}/bin
+        REQUIRED
+        NO_DEFAULT_PATH)
+    if(USD_SCHEMA_GENERATOR)
+        list(PREPEND USD_SCHEMA_GENERATOR ${build_schema_python_exec})
+    endif()
+endif()
+
+if(NOT USD_SCHEMA_GENERATOR)
+    message(FATAL_ERROR "Failed to find usd schema generator - usdGenSchema")
+endif()
+
 find_package(Rpr REQUIRED)
 find_package(Rif REQUIRED)
 
@@ -69,13 +91,30 @@ set(PXR_THREAD_LIBS "${CMAKE_THREAD_LIBS_INIT}")
 
 if(HoudiniUSD_FOUND)
     set(HOUDINI_ROOT "$ENV{HFS}" CACHE PATH "Houdini installation dir")
-    find_package(Houdini REQUIRED CONFIG PATHS ${HOUDINI_ROOT}/toolkit/cmake)
+    set(HOUDINI_CONFIG_DIR ${HOUDINI_ROOT}/toolkit/cmake)
+    if(APPLE)
+        file(COPY
+                ${HOUDINI_ROOT}/toolkit/cmake/HoudiniConfigVersion.cmake
+            DESTINATION
+                ${CMAKE_CURRENT_BINARY_DIR})
+        file(READ ${HOUDINI_ROOT}/toolkit/cmake/HoudiniConfig.cmake HOUDINI_CONFIG)
+        string(REPLACE "_houdini_use_framework TRUE" "_houdini_use_framework FALSE" HOUDINI_CONFIG "${HOUDINI_CONFIG}")
+        string(REPLACE "\${CMAKE_CURRENT_LIST_DIR}" "\${HOUDINI_ROOT}/toolkit/cmake" HOUDINI_CONFIG "${HOUDINI_CONFIG}")
+        file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/HoudiniConfig.cmake "${HOUDINI_CONFIG}")
+        set(HOUDINI_CONFIG_DIR ${CMAKE_CURRENT_BINARY_DIR})
+    endif()
+    find_package(Houdini REQUIRED CONFIG PATHS ${HOUDINI_CONFIG_DIR})
 
     set(OPENEXR_LOCATION ${Houdini_USD_INCLUDE_DIR})
     set(OPENEXR_LIB_LOCATION ${Houdini_LIB_DIR})
 else()
     # We are using python to generate source files
-    find_package(PythonInterp 2.7 REQUIRED)
+    find_package(PythonInterp 3.7)
+
+    # If it's not provided externally, consider that it's default USD build and OpenEXR could be found at root
+    if (NOT OPENEXR_LOCATION)
+        set(OPENEXR_LOCATION ${USD_INCLUDE_DIR}/../)
+    endif()
 endif()
 
 if (NOT PXR_MALLOC_LIBRARY)
@@ -84,7 +123,13 @@ if (NOT PXR_MALLOC_LIBRARY)
     endif()
 endif()
 
-find_package(MaterialX QUIET)
+if(NOT MaterialX_FOUND)
+    find_package(MaterialX QUIET)
+endif()
+
+if(MaterialX_FOUND)
+    set(RPR_DISABLE_CUSTOM_MATERIALX_LOADER ON)
+endif()
 
 if(RPR_ENABLE_VULKAN_INTEROP_SUPPORT)
     find_package(Vulkan REQUIRED)
@@ -114,17 +159,29 @@ macro(find_exr)
     endif()
 endmacro()
 
-find_exr(Half IlmImf Iex)
-
-set(RPR_EXR_EXPORT_ENABLED TRUE)
-if(NOT OpenEXR_FOUND)
-    set(RPR_EXR_EXPORT_ENABLED FALSE)
+if (NOT MAYAUSD_OPENEXR_STATIC)
+    find_exr(Half IlmImf Iex)
+else()
+    find_exr(Half IlmImf Iex IlmThread zlib IMath)
 endif()
 
-find_exr(Half)
+set(RPR_EXR_EXPORT_ENABLED TRUE)
+
+if(HoudiniUSD_FOUND)
+    find_exr(OpenEXR OpenEXRCore Iex)
+endif()
 
 if(NOT OpenEXR_FOUND)
-    message(FATAL_ERROR "Failed to find Half library")
+    find_exr(Half IlmImf Iex)
+    if(NOT OpenEXR_FOUND)
+        set(RPR_EXR_EXPORT_ENABLED FALSE)
+    endif()
+
+    find_exr(Half)
+
+    if(NOT OpenEXR_FOUND)
+        message(FATAL_ERROR "Failed to find Half library")
+    endif()
 endif()
 
 # ----------------------------------------------

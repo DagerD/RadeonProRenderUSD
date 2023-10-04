@@ -22,8 +22,14 @@
 # language governing permissions and limitations under the Apache License.
 #
 
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Windows" AND HoudiniUSD_FOUND)
+    set(PATH_PARAMS NO_DEFAULT_PATH NO_SYSTEM_ENVIRONMENT_PATH)
+endif()
+
 find_path(OPENEXR_INCLUDE_DIR
+NAMES
     OpenEXR/half.h
+    Imath/half.h
 HINTS
     "${OPENEXR_LOCATION}"
     "$ENV{OPENEXR_LOCATION}"
@@ -31,7 +37,7 @@ PATH_SUFFIXES
     include/
 DOC
     "OpenEXR headers path"
-)
+${PATH_PARAMS})
 
 if(OPENEXR_INCLUDE_DIR)
   set(openexr_config_file "${OPENEXR_INCLUDE_DIR}/OpenEXR/OpenEXRConfig.h")
@@ -62,9 +68,13 @@ if(NOT OpenEXR_FIND_COMPONENTS)
         Iex
         Imath
         IlmImf
-        IlmThread)
+        IlmThread
+        IlmImfUtil
+        IexMath)
 endif()
 
+set(OPENEXR_LIBRARY_VARS)
+set(OPENEXR_LIBRARIES)
 foreach(OPENEXR_LIB ${OpenEXR_FIND_COMPONENTS})
 
     # OpenEXR libraries may be suffixed with the version number, so we search
@@ -72,6 +82,7 @@ foreach(OPENEXR_LIB ${OpenEXR_FIND_COMPONENTS})
     find_library(OPENEXR_${OPENEXR_LIB}_LIBRARY
         NAMES
             ${OPENEXR_LIB}-${OPENEXR_MAJOR_VERSION}_${OPENEXR_MINOR_VERSION}
+            ${OPENEXR_LIB}-${OPENEXR_MAJOR_VERSION}_${OPENEXR_MINOR_VERSION}_s
             ${OPENEXR_LIB}
         HINTS
             "${OPENEXR_LOCATION}"
@@ -81,22 +92,22 @@ foreach(OPENEXR_LIB ${OpenEXR_FIND_COMPONENTS})
             lib/
         DOC
             "OPENEXR's ${OPENEXR_LIB} library path"
-    )
+        ${PATH_PARAMS})
 
-    if(OPENEXR_${OPENEXR_LIB}_LIBRARY)
-        list(APPEND OPENEXR_LIBRARIES ${OPENEXR_${OPENEXR_LIB}_LIBRARY})
-    endif()
+    list(APPEND OPENEXR_LIBRARY_VARS OPENEXR_${OPENEXR_LIB}_LIBRARY)
+    list(APPEND OPENEXR_LIBRARIES ${OPENEXR_${OPENEXR_LIB}_LIBRARY})
 endforeach(OPENEXR_LIB)
 
 # So #include <half.h> works
 list(APPEND OPENEXR_INCLUDE_DIRS ${OPENEXR_INCLUDE_DIR})
 list(APPEND OPENEXR_INCLUDE_DIRS ${OPENEXR_INCLUDE_DIR}/OpenEXR)
+list(APPEND OPENEXR_INCLUDE_DIRS ${OPENEXR_INCLUDE_DIR}/Imath)
 
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(OpenEXR
     REQUIRED_VARS
         OPENEXR_INCLUDE_DIRS
-        OPENEXR_LIBRARIES
+        ${OPENEXR_LIBRARY_VARS}
     VERSION_VAR
         OPENEXR_VERSION
 )

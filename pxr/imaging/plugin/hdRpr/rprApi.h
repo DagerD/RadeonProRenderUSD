@@ -33,7 +33,12 @@ limitations under the License.
 #include <memory>
 #include <vector>
 #include <string>
-#include <condition_variable>
+
+#ifdef HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT
+#include <RadeonProRender_VK.h>
+#include <RadeonProRender_Baikal.h>
+#include <vulkan/vulkan.h>
+#endif // HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -52,6 +57,10 @@ std::unique_ptr<T> make_unique(Args&&... args) {
     return std::unique_ptr<T>(new T(std::forward<Args>(args)...));
 }
 
+/*
+* kVisibilityLight was intentionally removed because RPR_SHAPE_VISIBILITY_LIGHT is the sum of
+* RPR_SHAPE_VISIBILITY_PRIMARY_ONLY_FLAG and RPR_SHAPE_VISIBILITY_GLOSSY_REFRACTION
+*/ 
 enum HdRprVisibilityFlag {
     kVisiblePrimary = 1 << 0,
     kVisibleShadow = 1 << 1,
@@ -61,8 +70,7 @@ enum HdRprVisibilityFlag {
     kVisibleDiffuse = 1 << 5,
     kVisibleGlossyReflection = 1 << 6,
     kVisibleGlossyRefraction = 1 << 7,
-    kVisibleLight = 1 << 8,
-    kVisibleAll = (kVisibleLight << 1) - 1
+    kVisibleAll = (kVisibleGlossyRefraction << 1) - 1
 };
 const uint32_t kInvisible = 0u;
 
@@ -71,8 +79,13 @@ public:
     HdRprApi(HdRprDelegate* delegate);
     ~HdRprApi();
 
-    HdRprApiEnvironmentLight* CreateEnvironmentLight(const std::string& pathTotexture, float intensity, VtValue const& backgroundOverride);
-    HdRprApiEnvironmentLight* CreateEnvironmentLight(GfVec3f color, float intensity, VtValue const& backgroundOverride);
+    struct BackgroundOverride {
+        bool enable;
+        GfVec3f color;
+    };
+
+    HdRprApiEnvironmentLight* CreateEnvironmentLight(const std::string& pathTotexture, float intensity, BackgroundOverride const& backgroundOverride);
+    HdRprApiEnvironmentLight* CreateEnvironmentLight(GfVec3f color, float intensity, BackgroundOverride const& backgroundOverride);
     void SetTransform(HdRprApiEnvironmentLight* envLight, GfMatrix4f const& transform);
     void Release(HdRprApiEnvironmentLight* envLight);
 
@@ -94,35 +107,30 @@ public:
     RprUsdMaterial* CreateGeometryLightMaterial(GfVec3f const& emissionColor);
     void ReleaseGeometryLightMaterial(RprUsdMaterial* material);
 
-    struct VolumeMaterialParameters {
-        GfVec3f scatteringColor = GfVec3f(1.0f);
-        GfVec3f transmissionColor = GfVec3f(1.0f);
-        GfVec3f emissionColor = GfVec3f(1.0f);
-        float density = 1.0f;
-        float anisotropy = 0.0f;
-        bool multipleScattering = false;
-    };
     HdRprApiVolume* CreateVolume(VtUIntArray const& densityCoords, VtFloatArray const& densityValues, VtVec3fArray const& densityLUT, float densityScale,
                                  VtUIntArray const& albedoCoords, VtFloatArray const& albedoValues, VtVec3fArray const& albedoLUT, float albedoScale,
                                  VtUIntArray const& emissionCoords, VtFloatArray const& emissionValues, VtVec3fArray const& emissionLUT, float emissionScale,
-                                 const GfVec3i& gridSize, const GfVec3f& voxelSize, const GfVec3f& gridBBLow, VolumeMaterialParameters const& materialParams);
+                                 const GfVec3i& gridSize, const GfVec3f& voxelSize, const GfVec3f& gridBBLow);
     void SetTransform(HdRprApiVolume* volume, GfMatrix4f const& transform);
+    void SetVolumeVisibility(HdRprApiVolume* volume, uint32_t visibilityMask);
     void Release(HdRprApiVolume* volume);
 
     RprUsdMaterial* CreateMaterial(SdfPath const& materialId, HdSceneDelegate* sceneDelegate, HdMaterialNetworkMap const& materialNetwork);
     RprUsdMaterial* CreatePointsMaterial(VtVec3fArray const& colors);
     RprUsdMaterial* CreateDiffuseMaterial(GfVec3f const& color);
+    RprUsdMaterial* CreatePrimvarColorLookupMaterial();
     void Release(RprUsdMaterial* material);
 
     rpr::Shape* CreateMesh(VtVec3fArray const& points, VtIntArray const& pointIndexes, VtVec3fArray const& normals, VtIntArray const& normalIndexes, VtVec2fArray const& uvs, VtIntArray const& uvIndexes, VtIntArray const& vpf, TfToken const& polygonWinding);
     rpr::Shape* CreateMesh(VtArray<VtVec3fArray> const& pointSamples, VtIntArray const& pointIndexes, VtArray<VtVec3fArray> const& normalSamples, VtIntArray const& normalIndexes, VtArray<VtVec2fArray> const& uvSamples, VtIntArray const& uvIndexes, VtIntArray const& vpf, TfToken const& polygonWinding);
     rpr::Shape* CreateMeshInstance(rpr::Shape* prototypeMesh);
-    void SetMeshRefineLevel(rpr::Shape* mesh, int level);
+    void SetMeshRefineLevel(rpr::Shape* mesh, int level, const float creaseWeight);
     void SetMeshVertexInterpolationRule(rpr::Shape* mesh, TfToken boundaryInterpolation);
     void SetMeshMaterial(rpr::Shape* mesh, RprUsdMaterial const* material, bool displacementEnabled);
     void SetMeshVisibility(rpr::Shape* mesh, uint32_t visibilityMask);
     void SetMeshId(rpr::Shape* mesh, uint32_t id);
     void SetMeshIgnoreContour(rpr::Shape* mesh, bool ignoreContour);
+    bool SetMeshVertexColor(rpr::Shape* mesh, VtArray<VtVec3fArray> const& primvarSamples, HdInterpolation interpolation);
     void Release(rpr::Shape* shape);
 
     rpr::Curve* CreateCurve(VtVec3fArray const& points, VtIntArray const& indices, VtFloatArray const& radiuses, VtVec2fArray const& uvs, VtIntArray const& segmentPerCurve);
@@ -149,14 +157,29 @@ public:
     void SetAovBindings(HdRenderPassAovBindingVector const& aovBindings);
     HdRenderPassAovBindingVector GetAovBindings() const;
 
-    void SetInteropInfo(void* interopInfo, std::condition_variable* presentedConditionVariable, bool* presentedCondition);
+    void SetInteropInfo(void* interopInfo);
+
+#ifdef HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT
+    bool GetInteropSemaphore(VkSemaphore& rInteropSemaphore, uint32_t& rInteropSemaphoreIndex);
+#endif // HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT
+
+    void Restart();
 
     struct RenderStats {
         double percentDone;
         double averageRenderTimePerSample;
         double averageResolveTimePerSample;
+        double totalRenderTime;
+        double frameRenderTotalTime;
+        double frameResolveTotalTime;
+        double cacheCreationTime;
+        double syncTime;
     };
     RenderStats GetRenderStats() const;
+
+    std::vector<std::string> GetGpuUsedNames() const;
+    int GetCpuThreadCountUsed() const;
+    float GetFirstIterationRenerTime() const;
 
     void CommitResources();
     void Resolve(SdfPath const& aovId);
@@ -170,10 +193,13 @@ public:
     bool IsSphereAndDiskLightSupported() const;
     TfToken const& GetCurrentRenderQuality() const;
     rpr::FrameBuffer* GetRawColorFramebuffer();
+    rpr::FrameBuffer* GetPrimIdFramebuffer();
 
 private:
     HdRprApiImpl* m_impl = nullptr;
 };
+
+rpr::EnvironmentLight* GetLightObject(HdRprApiEnvironmentLight* envLight);
 
 PXR_NAMESPACE_CLOSE_SCOPE
 

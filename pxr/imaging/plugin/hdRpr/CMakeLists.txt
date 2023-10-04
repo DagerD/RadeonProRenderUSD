@@ -15,15 +15,24 @@ if(OpenVDB_FOUND)
     set(OptClass ${OptClass} field volume)
 endif(OpenVDB_FOUND)
 
+find_package(OpenMP)
+if (OPENMP_FOUND)
+    set (CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${OpenMP_C_FLAGS}")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+    set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
+endif()
+
 set(_sep ${PXR_RESOURCE_FILE_SRC_DST_SEPARATOR})
 if(HoudiniUSD_FOUND)
     list(APPEND OptLibs Houdini)
     add_definitions(-DENABLE_MULTITHREADED_RENDER_BUFFER)
     add_definitions(-DHDRPR_DEFAULT_MATERIAL_NETWORK_SELECTOR="karma")
     set(RESTART_REQUIRED_RESOURCE_FILE images/restartRequired_Houdini.png${_sep}images/restartRequired.png)
+    set(SCRIPT_RESOURCE_FILES scripts/rendersettings_OnLoaded.py${_sep}scripts/rendersettings_OnLoaded.py)
 else(HoudiniUSD_FOUND)
     add_definitions(-DHDRPR_DEFAULT_MATERIAL_NETWORK_SELECTOR="rpr")
     set(RESTART_REQUIRED_RESOURCE_FILE images/restartRequired_Usdview.png${_sep}images/restartRequired.png)
+    set(SCRIPT_RESOURCE_FILES)
 endif(HoudiniUSD_FOUND)
 
 set(GEN_SCRIPT_PYTHON ${PYTHON_EXECUTABLE})
@@ -43,6 +52,7 @@ if(HoudiniUSD_FOUND)
     set(GENERATED_FILES ${GENERATED_FILES}
         ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Light.ds
         ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Global.ds
+        ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Viewport.ds
         ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Geometry.ds)
     set(GENERATION_DEPENDENT_FILES ${GENERATION_DEPENDENT_FILES}
         ${GENERATION_SCRIPTS_DIR}/houdiniDsGenerator.py)
@@ -51,6 +61,7 @@ if(HoudiniUSD_FOUND)
         FILES
             ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Light.ds
             ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Global.ds
+            ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Viewport.ds
             ${CMAKE_CURRENT_BINARY_DIR}/HdRprPlugin_Geometry.ds
         DESTINATION "houdini/soho/parameters")
 
@@ -111,6 +122,7 @@ pxr_plugin(hdRpr
         ${OPENEXR_INCLUDE_DIRS}
         
         ${OptIncludeDir}
+        ${PROJECT_SOURCE_DIR}/deps/ghc_filesystem/include
 
     PRIVATE_CLASSES
         aovDescriptor
@@ -145,6 +157,7 @@ pxr_plugin(hdRpr
         plugInfo.json
         ${RESTART_REQUIRED_RESOURCE_FILE}
         ${RIF_MODEL_RESOURCE_FILES}
+        ${SCRIPT_RESOURCE_FILES}
 
     CPPFILES
         ${CMAKE_CURRENT_BINARY_DIR}/config.cpp
@@ -154,6 +167,12 @@ pxr_plugin(hdRpr
 
 if(RPR_EXR_EXPORT_ENABLED)
     target_compile_definitions(hdRpr PRIVATE -DRPR_EXR_EXPORT_ENABLED)
+endif()
+
+if(RPR_ENABLE_VULKAN_INTEROP_SUPPORT)
+    target_link_libraries(hdRpr ${Vulkan_LIBRARY})
+    target_include_directories(hdRpr PRIVATE ${Vulkan_INCLUDE_DIR})
+    target_compile_definitions(hdRpr PUBLIC HDRPR_ENABLE_VULKAN_INTEROP_SUPPORT)
 endif()
 
 target_sources(hdRpr PRIVATE
@@ -185,9 +204,10 @@ install(
 }\")")
 
 if(WIN32)
-    set(RPR_BINARIES
-        ${RPR_BIN_LOCATION}/RadeonProRender64.dll
-        ${RPR_BIN_LOCATION}/RprLoadStore64.dll)
+    set(RPR_BINARIES ${RPR_BIN_LOCATION}/RadeonProRender64.dll)
+    if(RPR_LOADSTORE_LIBRARY)
+        list(APPEND RPR_BINARIES ${RPR_BIN_LOCATION}/RprLoadStore64.dll)
+    endif()
     install(
         FILES ${RPR_BINARIES} ${RPR_PLUGINS} ${RIF_BINARIES} ${OptBin}
         DESTINATION lib)

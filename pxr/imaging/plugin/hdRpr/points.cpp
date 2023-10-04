@@ -15,6 +15,7 @@ limitations under the License.
 #include "rprApi.h"
 #include "primvarUtil.h"
 #include "renderParam.h"
+#include "material.h"
 
 #include "pxr/imaging/rprUsd/debugCodes.h"
 #include "pxr/imaging/hd/extComputationUtils.h"
@@ -23,9 +24,10 @@ limitations under the License.
 PXR_NAMESPACE_OPEN_SCOPE
 
 HdRprPoints::HdRprPoints(SdfPath const& id HDRPR_INSTANCER_ID_ARG_DECL)
-    : HdPoints(id HDRPR_INSTANCER_ID_ARG)
+    : HdRprBaseRprim(id HDRPR_INSTANCER_ID_ARG)
     , m_visibilityMask(kVisibleAll)
-    , m_subdivisionLevel(0) {
+    , m_subdivisionLevel(0)
+    , m_subdivisionCreaseWeight(0.0) {
 
 }
 
@@ -80,6 +82,12 @@ void HdRprPoints::Sync(
         }
     }
 
+    // By some undefined reason *dirtyBits & HdChangeTracker::DirtyMaterialId does not work for points. Then we need to track changes ourself
+    auto oldMaterialId = m_materialId;
+    UpdateMaterialId(sceneDelegate, rprRenderParam);
+    bool dirtyMaterialOverride = oldMaterialId != m_materialId;
+    bool materialOverrideExists = !m_materialId.IsEmpty();
+
     bool dirtyDisplayColors = HdChangeTracker::IsPrimvarDirty(*dirtyBits, id, HdTokens->displayColor);
     if (dirtyDisplayColors) {
         HdRprFillPrimvarDescsPerInterpolation(sceneDelegate, id, &primvarDescsPerInterpolation);
@@ -110,6 +118,11 @@ void HdRprPoints::Sync(
 
         if (m_subdivisionLevel != geomSettings.subdivisionLevel) {
             m_subdivisionLevel = geomSettings.subdivisionLevel;
+            dirtySubdivisionLevel = true;
+        }
+
+        if (m_subdivisionCreaseWeight != geomSettings.subdivisionCreaseWeight) {
+            m_subdivisionCreaseWeight = geomSettings.subdivisionCreaseWeight;
             dirtySubdivisionLevel = true;
         }
 
@@ -146,9 +159,9 @@ void HdRprPoints::Sync(
             auto& topology = UsdImagingGetUnitSphereMeshTopology();
             auto& points = UsdImagingGetUnitSphereMeshPoints();
 
-            m_prototypeMesh = rprApi->CreateMesh(points, topology.GetFaceVertexIndices(), VtVec3fArray(), VtIntArray(), VtVec2fArray(), VtIntArray(), topology.GetFaceVertexCounts(), topology.GetOrientation());
+            m_prototypeMesh = rprApi->CreateMesh(points, topology.GetFaceVertexIndices(), points, topology.GetFaceVertexIndices(), VtVec2fArray(), VtIntArray(), topology.GetFaceVertexCounts(), topology.GetOrientation());
             rprApi->SetMeshVisibility(m_prototypeMesh, kInvisible);
-            rprApi->SetMeshRefineLevel(m_prototypeMesh, m_subdivisionLevel);
+            rprApi->SetMeshRefineLevel(m_prototypeMesh, m_subdivisionLevel, m_subdivisionCreaseWeight);
 
             dirtyPrototypeMesh = true;
 
@@ -182,7 +195,7 @@ void HdRprPoints::Sync(
 
     if (!m_instances.empty()) {
         if (dirtySubdivisionLevel && !dirtyPrototypeMesh) {
-            rprApi->SetMeshRefineLevel(m_prototypeMesh, m_subdivisionLevel);
+            rprApi->SetMeshRefineLevel(m_prototypeMesh, m_subdivisionLevel, m_subdivisionCreaseWeight);
         }
 
         if ((*dirtyBits & HdChangeTracker::DirtyTransform) ||
@@ -208,9 +221,19 @@ void HdRprPoints::Sync(
             }
         }
 
-        if (dirtyDisplayColors || dirtyInstances) {
+        if (!materialOverrideExists && (dirtyDisplayColors || dirtyInstances)) {
             for (size_t i = 0; i < m_instances.size(); ++i) {
                 rprApi->SetMeshMaterial(m_instances[i], m_material, false);
+            }
+        }
+        else if (materialOverrideExists && (dirtyMaterialOverride || dirtyInstances)) {
+            auto material = static_cast<const HdRprMaterial*>(
+                sceneDelegate->GetRenderIndex().GetSprim(HdPrimTypeTokens->material, m_materialId));
+
+            if (material && material->GetRprMaterialObject()) {
+                for (size_t i = 0; i < m_instances.size(); ++i) {
+                    rprApi->SetMeshMaterial(m_instances[i], material->GetRprMaterialObject(), false);
+                }
             }
         }
 

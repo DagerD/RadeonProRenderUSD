@@ -24,6 +24,10 @@ void HdRprFillPrimvarDescsPerInterpolation(
     HdSceneDelegate* sceneDelegate, SdfPath const& id,
     std::map<HdInterpolation, HdPrimvarDescriptorVector>* primvarDescsPerInterpolation);
 
+const HdPrimvarDescriptor* HdRprFindFirstPrimvarRole(
+    std::map<HdInterpolation, HdPrimvarDescriptorVector> const& primvarDescsPerInterpolation,
+    const std::string& role);
+
 bool HdRprIsPrimvarExists(
     TfToken const& primvarName,
     std::map<HdInterpolation, HdPrimvarDescriptorVector> const& primvarDescsPerInterpolation,
@@ -38,6 +42,7 @@ bool HdRprIsValidPrimvarSize(
 struct HdRprGeometrySettings {
     int id = -1;
     int subdivisionLevel = 0;
+    float subdivisionCreaseWeight = 0.0;
     uint32_t visibilityMask = 0;
     bool ignoreContour = false;
     std::string cryptomatteName;
@@ -165,6 +170,35 @@ inline void HdRprGetPrimvarIndices(HdInterpolation interpolation, VtIntArray con
     } else if (interpolation == HdInterpolationConstant) {
         *out_indices = VtIntArray(faceIndices.size(), 0);
     }
+}
+
+inline VtValue HdRpr_GetParam(HdSceneDelegate* sceneDelegate, SdfPath id, TfToken name) {
+    // TODO: This is not Get() Because of the reasons listed here:
+    // https://groups.google.com/g/usd-interest/c/k-N05Ac7SRk/m/RtK5HvglAQAJ
+    // We may need to fix this in newer versions of USD
+
+    // Order here is important
+    // GetCameraParamValue works with deprecated schema and required work backward compatibility
+    //
+    // GetLightParamValue works with new schema, but if it wouldn't find any value
+    // it would return default value (But real value might be stored in GetCameraParamValue)
+
+    VtValue cameraValue = sceneDelegate->GetCameraParamValue(id, name);
+    if (!cameraValue.IsEmpty()) {
+        return cameraValue;
+    }
+
+    VtValue lightValue = sceneDelegate->GetLightParamValue(id, name);
+    if (!lightValue.IsEmpty()) {
+        return lightValue;
+    }
+
+    return VtValue();
+}
+
+template<typename T>
+T HdRpr_GetParam(HdSceneDelegate* sceneDelegate, SdfPath id, TfToken name, T defaultValue) {
+    return HdRpr_GetParam(sceneDelegate, id, name).GetWithDefault(defaultValue);
 }
 
 PXR_NAMESPACE_CLOSE_SCOPE
